@@ -1,0 +1,58 @@
+<section id="settings" class="panel active" aria-label="Settings">
+  <div class="grid-2">
+    <div class="panel-card">
+      <div class="panel-title">Units & Thresholds</div>
+      <form id="settingsForm" class="form">
+        <label>Hostname<input name="hostname" placeholder="momo" /></label>
+        <label>Units<select name="units"><option value="C">Celsius</option><option value="F">Fahrenheit</option></select></label>
+        <div class="thresholds-grid" role="group" aria-label="Thresholds">
+          <div class="hdr"></div>
+          <div class="hdr">Min</div>
+          <div class="hdr">Ideal</div>
+          <div class="hdr">Max</div>
+
+          <div class="row-label">Temperature</div>
+          <input type="number" step="0.1" name="tmin" aria-label="Temperature Min" />
+          <input type="number" step="0.1" name="tideal" aria-label="Temperature Ideal" />
+          <input type="number" step="0.1" name="tmax" aria-label="Temperature Max" />
+
+          <div class="row-label">Humidity</div>
+          <input type="number" step="0.1" name="hmin" aria-label="Humidity Min" />
+          <input type="number" step="0.1" name="hideal" aria-label="Humidity Ideal" />
+          <input type="number" step="0.1" name="hmax" aria-label="Humidity Max" />
+
+          <div class="row-label">Comfort</div>
+          <input type="number" step="1" min="0" max="100" name="cmin" aria-label="Comfort Min" />
+          <input type="number" step="1" min="0" max="100" name="cideal" aria-label="Comfort Ideal" />
+          <input type="number" step="1" min="0" max="100" name="cmax" aria-label="Comfort Max" />
+        </div>
+        <div class="split">
+          <label>Cam Size<select name="camsize">
+            <option value="5">CIF</option>
+            <option value="6" selected>QVGA</option>
+            <option value="7">VGA</option>
+            <option value="8">SVGA</option>
+            <option value="9">XGA</option>
+            <option value="10">SXGA (1280×1024)</option>
+            <option value="11">UXGA (1600×1200)</option>
+          </select></label>
+          <label>JPEG Quality<input type="number" min="10" max="63" name="camq" /></label>
+        </div>
+        <div class="toolbar right"><button class="btn primary" type="submit">Save</button></div>
+      </form>
+    </div>
+
+    <div class="panel-card">
+      <div class="panel-title">System Info</div>
+      <div class="stat-strip">
+        <div class="stat"><div class="k">Host</div><div id="qi-host" class="v">--</div></div>
+        <div class="stat"><div class="k">IP</div><div id="qi-ip" class="v">--</div></div>
+        <div class="stat"><div class="k">SSID</div><div id="qi-ssid" class="v">--</div></div>
+        <div class="stat"><div class="k">RSSI</div><div id="qi-rssi" class="v">--</div></div>
+        <div class="stat"><div class="k">Camera</div><div id="qi-camera" class="v">--</div></div>
+        <div class="stat"><div class="k">Units</div><div id="qi-units" class="v">--</div></div>
+        <div class="stat"><div class="k">Mode</div><div id="qi-mode" class="v">--</div></div>
+      </div>
+    </div>
+  </div>
+</section>

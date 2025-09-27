@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ReptiMon</title>
+  <link rel="stylesheet" href="/style.css?v=5">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@200;300;400&display=swap">
+  <script src="/vendor/microplot.js?v=3"></script>
+</head>
+<body>
+  <div class="frame">
+    <div id="header"></div>
+    <div class="mainrow">
+    <nav id="sidebar" class="sidebar" aria-expanded="true" role="tablist">
+  <button id="burger" class="burger sb" aria-pressed="false" aria-label="Toggle navigation">☰</button>
+  <button class="side-item active" data-panel="dashboard" data-component="dashboard" role="tab" aria-selected="true"><span class="icon"><span class="material-symbols-outlined">speed</span></span><span class="label">Dashboard</span></button>
+  <button class="side-item" data-panel="camera" data-component="camera" role="tab" aria-selected="false"><span class="icon"><span class="material-symbols-outlined">photo_camera</span></span><span class="label">Camera</span></button>
+  <button class="side-item" data-panel="network" data-component="network" role="tab" aria-selected="false"><span class="icon"><span class="material-symbols-outlined">wifi</span></span><span class="label">Network</span></button>
+  <button class="side-item" data-panel="settings" data-component="settings" role="tab" aria-selected="false"><span class="icon"><span class="material-symbols-outlined">tune</span></span><span class="label">Settings</span></button>
+  <button class="side-item" data-panel="system" data-component="system" role="tab" aria-selected="false"><span class="icon"><span class="material-symbols-outlined">desktop_windows</span></span><span class="label">System</span></button>
+  <button class="side-item" data-panel="api" data-component="api" role="tab" aria-selected="false"><span class="icon"><span class="material-symbols-outlined">code</span></span><span class="label">API</span></button>
+      </nav>
+      <main class="content">
+        <div class="container">
+          <div id="view" role="region" aria-live="polite"></div>
+        </div><!-- /.container -->
+      </main>
+    </div><!-- /.mainrow -->
+  <div id="footer"></div>
+  </div><!-- /.frame -->
+
+  <!-- Command Palette -->
+  <div id="cmdModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); align-items:flex-start; justify-content:center; padding-top:10vh;">
+    <div class="panel-card" style="max-width:520px; width:92%;">
+      <div class="panel-title">Commands</div>
+      <div class="list">
+        <div class="row"><div>Reboot</div><button id="cmd-reboot" class="btn sm warn">Run</button></div>
+        <div class="row"><div>WiFi Scan</div><button id="cmd-scan" class="btn sm">Run</button></div>
+        <div class="row"><div>Open Settings</div><button id="cmd-settings" class="btn sm">Run</button></div>
+      </div>
+      <div class="toolbar right"><button id="cmd-close" class="btn">Close</button></div>
+    </div>
+  </div>
+
+  <!-- Password Modal for Network tab -->
+  <div id="pwModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); align-items:center; justify-content:center;">
+    <div class="panel-card" style="max-width:420px; width:92%;">
+      <div class="panel-title">Network Password</div>
+      <form id="pwForm" class="form">
+        <label>SSID<input id="pwSsid" name="ssid" required readonly /></label>
+        <label>Password<input id="pwPass" name="password" type="password" placeholder="Enter password" autofocus /></label>
+        <div class="toolbar right">
+          <button type="button" class="btn" id="pwCancel">Cancel</button>
+          <button type="submit" class="btn primary">Connect</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/script.js?v=5"></script>
+  
+</body>
+</html>

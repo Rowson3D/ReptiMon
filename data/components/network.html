@@ -1,0 +1,83 @@
+<section id="network" class="panel active" aria-label="Network">
+  <div class="panel-card compact">
+    <div class="panel-title">Connection
+      <span class="badges"><span id="nw-badge-mode" class="badge">--</span><span id="nw-badge-state" class="badge">--</span></span>
+    </div>
+    <div class="kv two-col">
+      <div><span class="label">SSID</span><span id="ssid" class="value small mono">--</span></div>
+      <div><span class="label">BSSID</span><span id="bssid" class="value small mono">--</span></div>
+      <div><span class="label">IP</span><span id="ip" class="value small mono">--</span></div>
+      <div><span class="label">RSSI</span><span id="rssi" class="value small">--</span></div>
+      <div><span class="label">Gateway</span><span id="gw" class="value small mono">--</span></div>
+      <div><span class="label">Subnet</span><span id="subnet" class="value small mono">--</span></div>
+      <div><span class="label">DNS</span><span id="dns" class="value small mono">--</span></div>
+      <div><span class="label">MAC</span><span id="sta-mac" class="value small mono">--</span></div>
+    </div>
+    <div class="toolbar" style="flex-wrap:wrap">
+      <button id="reconnect" class="btn">Reconnect</button>
+      <button id="disconnect" class="btn">Disconnect</button>
+    </div>
+  </div>
+
+  <div class="panel-card compact">
+    <div class="panel-title">Manage Networks</div>
+    <div class="toolbar" style="flex-wrap:wrap">
+      <button id="scan" class="btn">Scan</button>
+    </div>
+    <div id="scanResults" class="list"></div>
+  </div>
+
+  <div class="panel-card compact">
+    <div class="panel-title">Access Point <span class="badges"><span id="ap-badge" class="badge">--</span></span></div>
+    <div class="kv two-col">
+      <div><span class="label">AP SSID</span><span id="ap-ssid" class="value small mono">--</span></div>
+      <div><span class="label">AP IP</span><span id="ap-ip" class="value small mono">--</span></div>
+      <div><span class="label">Clients</span><span id="ap-clients" class="value small">--</span></div>
+      <div><span class="label">AP MAC</span><span id="ap-mac" class="value small mono">--</span></div>
+      <div><span class="label">Captive</span><span id="ap-cap" class="value small">--</span></div>
+    </div>
+    <div class="toolbar" style="flex-wrap:wrap">
+      <button id="ap-toggle" class="btn">Toggle AP</button>
+    </div>
+  </div>
+
+  <div class="panel-card compact">
+    <div class="panel-title">Recovery</div>
+    <div id="recoverBox" class="kv full">
+      <div class="full muted">If you can't connect to your Wi‑Fi (moved, renamed, or device ownership changed), start the built‑in Access Point to reconfigure from your phone.</div>
+      <div class="toolbar" style="flex-wrap:wrap">
+        <button id="ap-setup" class="btn primary">Start AP for Setup</button>
+        <button id="ap-stop" class="btn">Stop AP</button>
+        <button id="forget" class="btn warn">Forget WiFi (AP only)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-card compact">
+    <details class="adv">
+      <summary class="panel-title">Advanced</summary>
+      <div class="kv two-col">
+        <div><span class="label">Tx Power</span><span id="txp" class="value small">--</span></div>
+        <div><span class="label">Sleep</span><span id="sleep" class="value small">--</span></div>
+      </div>
+      <div class="toolbar form" style="flex-wrap:wrap">
+        <span class="muted">Tx Power</span>
+        <select id="txp-set">
+          <option value="8">8 dBm (low)</option>
+          <option value="11">11 dBm</option>
+          <option value="17">17 dBm</option>
+          <option value="20">20 dBm (max)</option>
+        </select>
+        <button id="apply-txp" class="btn">Apply</button>
+        <button id="sleep-on" class="btn">Sleep On</button>
+        <button id="sleep-off" class="btn">Sleep Off</button>
+      </div>
+      <div class="toolbar form" style="flex-wrap:wrap">
+        <span class="muted">Hostname</span>
+        <input id="host-set" style="width:220px" placeholder="momo"/>
+        <button id="apply-host" class="btn">Apply</button>
+        <button id="mdns-restart" class="btn">Restart mDNS</button>
+      </div>
+    </details>
+  </div>
+</section>

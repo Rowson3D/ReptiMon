@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0d10" />
+  <title>ReptiMon Setup</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111827'/%3E%3Cpath d='M18 46V18h14c6.6 0 12 5.4 12 12s-5.4 12-12 12H18z' fill='%2360a5fa'/%3E%3Cpath d='M24 24h8a6 6 0 110 12h-8V24z' fill='%23e5e7eb'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="topbar">
+  <div class="brand">ReptiMon</div>
+    <div class="subtitle">Setup Portal</div>
+  </header>
+  <main class="container narrow">
+    <section class="panel active">
+      <div class="panel-card">
+        <div class="panel-title">Connect to WiFi</div>
+        <p class="muted">You're connected to the device access point. Choose your home network and enter the password. When connected, the device will switch to your network and be available at <code>http://momo.local</code>.</p>
+        <div class="toolbar">
+          <button id="scan" class="btn">Scan Networks</button>
+          <div id="spinner" class="muted" style="display:none">Scanning...</div>
+        </div>
+        <div id="results" class="list"></div>
+        <div id="hiddenNotice" class="muted" style="display:none; margin-top:6px;">Hidden networks are omitted. Use the Manual form below to enter SSID and password.</div>
+      </div>
+      <div class="panel-card">
+        <div class="panel-title">Manual</div>
+        <form id="manual" class="form">
+          <label>SSID<input name="ssid" required placeholder="Your WiFi" /></label>
+          <label>Password<input name="password" type="password" placeholder="Password (blank if open)" /></label>
+          <div class="toolbar right"><button class="btn primary" type="submit">Connect</button></div>
+        </form>
+      </div>
+      <div id="connectOverlay" style="display:none;margin-top:12px" class="panel-card">
+        <div class="panel-title">Connecting...</div>
+        <p class="muted">Attempting to connect to <span id="coSsid"></span>. This page will update automatically.</p>
+        <div class="muted">Status: <span id="coStatus">starting</span></div>
+      </div>
+      <!-- Password Modal -->
+      <div id="pwModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); align-items:center; justify-content:center;">
+        <div class="panel-card" style="max-width:420px; width:92%;">
+          <div class="panel-title">Network Password</div>
+          <form id="pwForm" class="form">
+            <label>SSID<input id="pwSsid" name="ssid" required readonly /></label>
+            <label>Password<input id="pwPass" name="password" type="password" placeholder="Enter password" autofocus /></label>
+            <div class="toolbar right">
+              <button type="button" class="btn" id="pwCancel">Cancel</button>
+              <button type="submit" class="btn primary">Connect</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="footer">
+    <span id="footerStatus">Ready</span>
+    <span class="muted"> • </span>
+    <span class="muted">AP:</span> <span id="footerAP" class="muted">--</span>
+    <span class="muted"> • </span>
+    <span class="muted">IP:</span> <span id="footerIP" class="muted">--</span>
+  </footer>
+  <script>
+  const $ = (s)=>document.querySelector(s);
+  const setStatus = (t)=>($('#footerStatus').textContent=t);
+  const footerAP = $('#footerAP');
+  const footerIP = $('#footerIP');
+    const spinner = $('#spinner');
+    const overlay = $('#connectOverlay');
+    const coSsid = $('#coSsid');
+    const coStatus = $('#coStatus');
+    const hiddenNotice = $('#hiddenNotice');
+    const pwModal = $('#pwModal');
+    const pwForm = $('#pwForm');
+    const pwSsid = $('#pwSsid');
+    const pwPass = $('#pwPass');
+    let scanning = false; let pollTimer; let ws;
+    let lastNetworks = [];
+
+    function showSpinner(v){ if (spinner) spinner.style.display = v? 'inline-block':'none'; }
+
+    async function startScan(){
+      try { await fetch('/api/wifi/scan/start'); scanning = true; showSpinner(true); setStatus('Scanning...'); }
+      catch(e){ setStatus('Scan failed'); }
+    }
+    async function refreshList(){
+      try{
+        const r = await fetch('/api/wifi/scan/results');
+        const d = await r.json();
+        const el = $('#results');
+        if (!el) return;
+        scanning = (d.status === 'scanning');
+        showSpinner(scanning);
+        if (scanning){ setStatus('Scanning...'); return; }
+        if (Array.isArray(d.networks)){
+          // sort by RSSI desc and filter out hidden/empty SSIDs
+          lastNetworks = d.networks
+            .filter(n => (n.ssid && n.ssid.trim().length > 0))
+            .sort((a,b)=>b.rssi - a.rssi);
+          const rows = lastNetworks.map(n=>{
+            const secure = (n.security && n.security !== 'open');
+            const lock = secure ? '🔒' : '🔓';
+            return `<div class="row">
+              <div>${lock} ${n.ssid}</div>
+              <div class="muted">${n.rssi} dBm ${secure? 'secured':'open'}</div>
+              <button class="btn sm" data-ssid="${encodeURIComponent(n.ssid)}" data-secure="${secure}">Connect</button>
+            </div>`;
+          }).join('');
+          el.innerHTML = rows || '';
+          hiddenNotice.style.display = (rows === '') ? 'block' : 'none';
+          el.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+            const ssid = decodeURIComponent(b.dataset.ssid);
+            const secure = b.dataset.secure === 'true';
+            if (secure) { openPwModal(ssid); } else { connectTo(ssid, ''); }
+          }));
+          setStatus(lastNetworks.length? 'Select a network':'No networks found');
+        }
+      }catch(e){ /* ignore transient */ }
+    }
+    async function connectTo(ssid, pass=''){
+      coSsid.textContent = ssid; coStatus.textContent = 'connecting'; overlay.style.display='block';
+      try{ await fetch('/api/wifi/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ssid, password: pass})}); }
+      catch(e){}
+      // start polling status during connect
+      pollStatus(true);
+    }
+    function openPwModal(ssid){
+      pwSsid.value = ssid; pwPass.value = '';
+      pwModal.style.display = 'flex';
+      setTimeout(()=>pwPass.focus(), 0);
+    }
+    function closePwModal(){ pwModal.style.display = 'none'; }
+    async function pollStatus(active){
+      if (!active){ clearInterval(pollTimer); return; }
+      clearInterval(pollTimer);
+      pollTimer = setInterval(async () => {
+        try{
+          const r = await fetch('/api/wifi/status');
+          const d = await r.json();
+          if (d.state === 'connected'){
+            coStatus.textContent = 'connected';
+            setStatus('Connected. Switch to your WiFi.');
+            clearInterval(pollTimer);
+          } else if (d.connecting){
+            coStatus.textContent = 'connecting';
+          } else if (d.state === 'disconnected'){
+            coStatus.textContent = 'disconnected';
+          }
+        }catch(e){}
+      }, 1000);
+    }
+
+    function openWS(){
+      try{
+        ws = new WebSocket(`ws://${location.host}/ws`);
+        ws.onmessage = (e)=>{
+          try{
+            const msg = JSON.parse(e.data);
+            if (msg.event === 'wifi_connected'){
+              coStatus.textContent = 'connected';
+              setStatus('Connected. Switch to your WiFi.');
+            } else if (msg.event === 'wifi_failed'){
+              coStatus.textContent = 'failed';
+              setStatus('Connection failed, still in AP mode');
+            }
+          }catch(err){}
+        };
+      }catch(e){}
+    }
+
+    async function hydrateFooter(){
+      try{
+        const r = await fetch('/api/wifi/status');
+        const d = await r.json();
+        if (footerAP) footerAP.textContent = d.ap_ssid || 'AP Mode';
+        if (footerIP) footerIP.textContent = d.ip || '--';
+      }catch(e){}
+    }
+
+    $('#scan').addEventListener('click', async ()=>{ await startScan(); setTimeout(refreshList, 1200); });
+    $('#manual').addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const f = e.target; const ssid=f.ssid.value.trim(); const password=f.password.value;
+      if (!ssid) return;
+      connectTo(ssid, password);
+    });
+    pwForm.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const ssid = pwSsid.value.trim(); const pass = pwPass.value;
+      closePwModal();
+      connectTo(ssid, pass);
+    });
+    $('#pwCancel').addEventListener('click', ()=>{ closePwModal(); });
+
+    // Auto behavior: kick off a scan and periodically refresh networks list
+    (async function init(){
+      openWS();
+      hydrateFooter();
+      await startScan();
+      // refresh scan every 7s (start new scan if idle), refresh list every 1.2s
+      setInterval(async ()=>{ if (!scanning) await startScan(); }, 7000);
+      setInterval(refreshList, 1200);
+    })();
+  </script>
+</body>
+</html>

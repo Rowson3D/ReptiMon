@@ -1,0 +1,130 @@
+<section id="dashboard" class="panel active" aria-label="Dashboard">
+  <div class="grid-dash">
+    <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+  <div class="card hero" id="cardTemp">
+        <div class="card-title">Temperature <span id="units" class="muted">C</span></div>
+        <div class="metric-row">
+          <div class="metric"><span id="tempValue" class="value xl">--</span><span class="unit">°</span></div>
+          <div class="trend"><span id="tempTrend">●</span><span id="tempTrendText" class="muted">--</span></div>
+        </div>
+  <canvas id="sparkTemp" height="28" style="width:100%;opacity:.8;margin-top:6px"></canvas>
+  <div class="spark-note"><span id="sparkTempRange">--</span></div>
+        <div class="meta"><span id="tempStatus" class="status-badge">--</span></div>
+        <div class="mini-row">
+          <div>Range: <span id="tempRange">--</span></div>
+          <div>Avg: <span id="tempAvg">--</span></div>
+        </div>
+        <div class="mini-row" style="margin-top:4px;font-size:.75rem">
+          <div style="width:100%">Min <span id="tMin">--</span> • Ideal <span id="tIdeal">--</span> • Max <span id="tMax">--</span></div>
+        </div>
+      </div>
+  <div class="card hero" id="cardHum">
+        <div class="card-title">Humidity</div>
+        <div class="metric-row">
+          <div class="metric"><span id="humValue" class="value xl">--</span><span class="unit">%</span></div>
+          <div class="trend"><span id="humTrend">●</span><span id="humTrendText" class="muted">--</span></div>
+        </div>
+  <canvas id="sparkHum" height="28" style="width:100%;opacity:.8;margin-top:6px"></canvas>
+  <div class="spark-note"><span id="sparkHumRange">--</span></div>
+        <div class="meta"><span id="humStatus" class="status-badge">--</span></div>
+        <div class="mini-row">
+          <div>Range: <span id="humRange">--</span></div>
+          <div>Avg: <span id="humAvg">--</span></div>
+        </div>
+        <div class="mini-row" style="margin-top:4px;font-size:.75rem">
+          <div style="width:100%">Min <span id="hMin">--</span> • Ideal <span id="hIdeal">--</span> • Max <span id="hMax">--</span></div>
+        </div>
+      </div>
+  <div class="card hero" id="cardComfort">
+        <div class="card-title">Comfort Index</div>
+        <div class="metric-row">
+          <div class="metric"><span id="comfortValue" class="value xl">--</span><span class="unit"></span></div>
+          <div class="trend"><span id="comfortTrend">●</span><span id="comfortTrendText" class="muted">--</span></div>
+        </div>
+  <canvas id="sparkComfort" height="28" style="width:100%;opacity:.8;margin-top:6px"></canvas>
+  <div class="spark-note"><span id="sparkComfortRange">--</span></div>
+        <div class="meta"><span id="comfortStatus" class="status-badge">--</span></div>
+        <div class="mini-row">
+          <div>Range: <span id="comfortRange">--</span></div>
+          <div>Avg: <span id="comfortAvg">--</span></div>
+        </div>
+        <div class="mini-row" style="margin-top:4px;font-size:.75rem">
+          <div>Heat Index: <span id="heatValueMini">--</span></div>
+          <div>Dew Point: <span id="dewValueMini">--</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-card">
+      <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <span>Live Chart</span>
+        <div class="toolbar" style="margin:0">
+          <button id="clearChart" class="btn sm" title="Clear history & rescale">Clear</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span>
+          <label class="color-label"><span class="dot temp"></span>
+            <input id="clrTemp" type="color" class="color-input" aria-label="Pick Temperature color">
+          </label>
+          Temperature
+        </span>
+        <span>
+          <label class="color-label"><span class="dot hum"></span>
+            <input id="clrHum" type="color" class="color-input" aria-label="Pick Humidity color">
+          </label>
+          Humidity
+        </span>
+      </div>
+      <div id="chartControls" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 4px;font-size:.65rem;align-items:flex-end">
+        <label class="ctrl-label">T Min<input id="chartTempMin" class="ctrl-input" type="number" step="0.5"></label>
+        <label class="ctrl-label">T Max<input id="chartTempMax" class="ctrl-input" type="number" step="0.5"></label>
+        <label class="ctrl-label">H Min<input id="chartHumMin" class="ctrl-input" type="number" step="0.5"></label>
+        <label class="ctrl-label">H Max<input id="chartHumMax" class="ctrl-input" type="number" step="0.5"></label>
+        <button id="chartAutoscale" class="btn sm" title="Toggle auto scale">Auto</button>
+        <button id="chartFit" class="btn sm" title="Fit current data into manual scale">Fit</button>
+        <button id="chartPause" class="btn sm" title="Pause live updates">Pause</button>
+        <button id="chartExport" class="btn sm" title="Export chart PNG">PNG</button>
+      </div>
+      <canvas id="chart"></canvas>
+    </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="panel-card">
+        <div class="panel-title">Derived</div>
+        <div class="stat-strip" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">
+          <div class="stat"><div class="k">Dew Point</div><div id="dewValue" class="v">--</div></div>
+          <div class="stat"><div class="k">Heat Index</div><div id="heatValue" class="v">--</div></div>
+          <div class="stat"><div class="k">VPD</div><div id="vpdValue" class="v">--</div></div>
+          <div class="stat"><div class="k">Abs. Humidity</div><div id="absHumValue" class="v">--</div></div>
+          <div class="stat"><div class="k">Temp Δ</div><div id="tempDelta" class="v">--</div></div>
+          <div class="stat"><div class="k">RH Δ</div><div id="humDelta" class="v">--</div></div>
+        </div>
+      </div>
+      <div class="panel-card">
+        <div class="panel-title">Quick Info</div>
+        <div class="stat-strip">
+          <div class="stat"><div class="k">Host</div><div id="qi-host" class="v">--</div></div>
+          <div class="stat"><div class="k">IP</div><div id="qi-ip" class="v">--</div></div>
+          <div class="stat"><div class="k">SSID</div><div id="qi-ssid" class="v">--</div></div>
+          <div class="stat"><div class="k">RSSI</div><div id="qi-rssi" class="v">--</div></div>
+          <div class="stat"><div class="k">Camera</div><div id="qi-camera" class="v">--</div></div>
+          <div class="stat"><div class="k">Units</div><div id="qi-units" class="v">--</div></div>
+          <div class="stat"><div class="k">Mode</div><div id="qi-mode" class="v">--</div></div>
+        </div>
+      </div>
+      <div class="panel-card">
+        <div class="panel-title">Runtime</div>
+        <div class="stat-strip" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">
+          <div class="stat"><div class="k">Uptime</div><div id="uptime" class="v">--</div></div>
+          <div class="stat"><div class="k">CPU</div><div id="cpu" class="v">--</div></div>
+          <div class="stat"><div class="k">Free Heap</div><div id="heap" class="v">--</div></div>
+          <div class="stat"><div class="k">Sensor Hz</div><div id="sensorHz" class="v">--</div></div>
+          <div class="stat"><div class="k">Display Hz</div><div id="displayHz" class="v">--</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>

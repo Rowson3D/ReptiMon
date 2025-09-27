@@ -1,0 +1,60 @@
+<section id="camera" class="panel active" aria-label="Camera">
+  <div class="panel-card">
+    <div class="panel-title">Camera</div>
+    <div class="cam-grid">
+      <div class="cam-view">
+        <div id="camWrap" class="camera-wrap w43">
+          <img id="snapshot" alt="Camera Snapshot" />
+        </div>
+        <div class="muted" style="margin-top:6px">Streaming MJPEG live. Use Live to pause or resume.</div>
+      </div>
+      <div class="cam-controls">
+        <div class="group">
+          <div class="group-title">Session</div>
+          <div class="btn-row">
+            <button id="autoToggle" class="btn on" title="Toggle live stream">Live</button>
+            <button id="refreshShot" class="btn" title="Restart stream / refresh snapshot">Restart</button>
+            <button id="fullRes" class="btn" title="Open full-resolution photo in new tab">Full‑res Photo</button>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-title">View</div>
+          <div class="btn-row">
+            <span class="label">Aspect</span>
+            <button id="camAR43" class="btn sm on" title="4:3">4:3</button>
+            <button id="camAR169" class="btn sm" title="16:9">16:9</button>
+            <button id="camAR1" class="btn sm" title="1:1">1:1</button>
+          </div>
+          <div class="btn-row">
+            <span class="label">Orientation</span>
+            <button id="camMirror" class="btn sm" title="Mirror horizontally">Mirror</button>
+            <button id="camFlip" class="btn sm" title="Flip vertically">Flip</button>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-title">Image Presets</div>
+          <div class="btn-row">
+            <button id="camPresetAuto" class="btn sm">Auto WB</button>
+            <button id="camPresetDay" class="btn sm">Daylight</button>
+            <button id="camPresetOffice" class="btn sm">Fluorescent</button>
+            <button id="camPresetLow" class="btn sm">Low Light+</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-card" style="margin-top:12px">
+    <div class="panel-title">Stream Stats</div>
+    <div class="stat-strip" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+      <div class="stat"><div class="k">FPS</div><div id="camFps" class="v">--</div></div>
+      <div class="stat"><div class="k">Bitrate</div><div id="camBitrate" class="v">--</div></div>
+      <div class="stat"><div class="k">Resolution</div><div id="camRes" class="v">--</div></div>
+      <div class="stat"><div class="k">Frames</div><div id="camFrames" class="v">--</div></div>
+      <div class="stat"><div class="k">Uptime</div><div id="camUptime" class="v">--</div></div>
+      <div class="stat"><div class="k">Last Size</div><div id="camSize" class="v">--</div></div>
+      <div class="stat"><div class="k">Quality</div><div id="camQ" class="v">--</div></div>
+      <div class="stat"><div class="k">Frame Size</div><div id="camFS" class="v">--</div></div>
+    </div>
+  </div>
+</section>
