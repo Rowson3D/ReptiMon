@@ -1728,6 +1728,134 @@
   }
 
   function initSystemBindings() {
+    // OTA UI controller
+    const els = {
+      card: document.getElementById('otaCard'),
+      status: document.getElementById('ota-status'),
+      current: document.getElementById('ota-current'),
+      latest: document.getElementById('ota-latest'),
+      repo: document.getElementById('ota-repo'),
+      msg: document.getElementById('ota-msg'),
+      meter: document.getElementById('otaMeter'),
+      progress: document.getElementById('otaProgress'),
+      check: document.getElementById('ota-check'),
+      update: document.getElementById('ota-update'),
+      updateFs: document.getElementById('ota-update-fs'),
+      link: document.getElementById('ota-release-link')
+    };
+    async function refreshOtaInfo() {
+      try {
+        els.status.textContent = 'Checking…';
+        els.status.classList.remove('ok','bad');
+        els.meter?.classList.add('loading');
+        els.meter.style.width = '25%';
+        const r = await fetch('/api/ota/check');
+        const j = await r.json();
+        els.current.textContent = j.current || '--';
+        els.latest.textContent = j.latest || '--';
+        els.msg.textContent = j.ok ? (j.hasUpdate ? 'Update available.' : 'You are up to date.') : 'Update check failed.';
+        els.status.textContent = j.ok ? (j.hasUpdate ? 'Update available' : 'Up to date') : 'Error';
+        els.status.classList.toggle('ok', j.ok && !j.hasUpdate);
+        els.status.classList.toggle('bad', j.ok && j.hasUpdate);
+        els.update.disabled = !(j.ok && j.hasUpdate);
+        // FS button visibility/enabled when FS asset exists
+        if (els.updateFs) {
+          els.updateFs.style.display = j.ok && j.hasFs ? 'inline-block' : 'none';
+          els.updateFs.disabled = !(j.ok && j.hasFs);
+        }
+        // Optional: backend may later include releaseUrl/repo
+        if (j.releaseUrl) { els.link.style.display = 'inline-block'; els.link.href = j.releaseUrl; }
+        if (j.repo) { els.repo.textContent = j.repo; }
+      } catch (e) {
+        els.msg.textContent = 'Failed to contact device';
+        els.status.textContent = 'Error';
+      } finally {
+        els.meter?.classList.remove('loading');
+        els.meter.style.width = '0%';
+      }
+    }
+    els.check?.addEventListener('click', refreshOtaInfo);
+    // Start with a passive info load (non-blocking)
+    setTimeout(refreshOtaInfo, 200);
+
+    els.update?.addEventListener('click', async ()=>{
+      if (!confirm('Apply update and reboot the device?')) return;
+      try {
+        els.update.disabled = true; els.check.disabled = true;
+        els.status.textContent = 'Updating…';
+        els.msg.textContent = 'Downloading and flashing firmware + Web UI. Do not power off.';
+        els.meter?.classList.add('loading');
+        els.meter.style.width = '10%';
+        await fetch('/api/ota/update_all', { method:'POST' });
+        // Poll for reboot completion by trying /api/data
+        let phase = 'rebooting'; let attempts = 0;
+        const spin = setInterval(()=>{
+          const p = Math.min(95, 10 + attempts*3); els.meter.style.width = p + '%'; attempts++; }, 1000);
+        // Wait for device to go away then come back
+        const sleep = (ms)=>new Promise(res=>setTimeout(res,ms));
+        // Give it a moment to start reboot
+        await sleep(2000);
+        // Probe loop: expect failures, then success
+        let back = false;
+        for (let i=0;i<90;i++) { // up to ~90s
+          try {
+            const r = await fetch('/api/data', { cache:'no-store' });
+            if (r.ok) { back = true; break; }
+          } catch(e) {}
+          await sleep(1000);
+        }
+        clearInterval(spin);
+        els.meter.classList.remove('loading');
+        els.meter.style.width = back ? '100%' : '0%';
+        els.status.textContent = back ? 'Updated' : 'Timeout';
+        els.msg.textContent = back ? 'Device is back online.' : 'Device did not return in time. Refresh manually.';
+        els.check.disabled = false; // allow re-check
+        await sleep(800);
+        refreshOtaInfo();
+      } catch (e) {
+        els.status.textContent = 'Failed';
+        els.msg.textContent = 'Update could not be started.';
+        els.update.disabled = false; els.check.disabled = false;
+        els.meter?.classList.remove('loading');
+        els.meter.style.width = '0%';
+      }
+    });
+
+    els.updateFs?.addEventListener('click', async ()=>{
+      if (!confirm('Update the Web UI (LittleFS) and reboot the device?')) return;
+      try {
+        els.updateFs.disabled = true; els.check.disabled = true; els.update.disabled = true;
+        els.status.textContent = 'Updating UI…';
+        els.msg.textContent = 'Downloading and flashing filesystem. Do not power off.';
+        els.meter?.classList.add('loading');
+        els.meter.style.width = '10%';
+        await fetch('/api/ota/updatefs', { method:'POST' });
+        // Reboot detection similar to firmware
+        let attempts = 0; const sleep = (ms)=>new Promise(res=>setTimeout(res,ms));
+        const spin = setInterval(()=>{ const p = Math.min(95, 10 + attempts*3); els.meter.style.width = p + '%'; attempts++; }, 1000);
+        await sleep(2000);
+        let back = false;
+        for (let i=0;i<90;i++) {
+          try { const r = await fetch('/api/data', { cache:'no-store' }); if (r.ok) { back = true; break; } } catch(e){}
+          await sleep(1000);
+        }
+        clearInterval(spin);
+        els.meter.classList.remove('loading');
+        els.meter.style.width = back ? '100%' : '0%';
+        els.status.textContent = back ? 'UI Updated' : 'Timeout';
+        els.msg.textContent = back ? 'Device is back online.' : 'Device did not return in time. Refresh manually.';
+        els.check.disabled = false; els.update.disabled = false; els.updateFs.disabled = false;
+        await sleep(800);
+        refreshOtaInfo();
+      } catch (e) {
+        els.status.textContent = 'Failed';
+        els.msg.textContent = 'FS update could not be started.';
+        els.updateFs.disabled = false; els.check.disabled = false;
+        els.meter?.classList.remove('loading');
+        els.meter.style.width = '0%';
+      }
+    });
+
     document.getElementById('reboot')?.addEventListener('click', async () => {
       try { await fetch('/api/system/reboot', { method: 'POST' }); } catch (e) {}
     });
@@ -1747,20 +1875,7 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       } catch (e) {}
     });
-    document.getElementById('ota-check')?.addEventListener('click', async ()=>{
-      try{
-        const r = await fetch('/api/ota/check');
-        const j = await r.json();
-        alert(`Current: ${j.current || '--'}\nLatest: ${j.latest || '--'}\nUpdate available: ${j.hasUpdate ? 'Yes' : 'No'}`);
-      }catch(e){ alert('Failed to check update'); }
-    });
-    document.getElementById('ota-update')?.addEventListener('click', async ()=>{
-      if (!confirm('Apply update from GitHub latest release and reboot?')) return;
-      try{
-        await fetch('/api/ota/update', { method:'POST' });
-        alert('Update started. Device will reboot if successful.');
-      }catch(e){ alert('Failed to start update'); }
-    });
+    // legacy alert handlers removed in favor of hero card UX
   }
 
   // (removed duplicate updateFooterNet definition)

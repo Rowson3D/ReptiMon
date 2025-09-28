@@ -11,6 +11,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
+#include <ctype.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -141,6 +142,14 @@ unsigned long lastWebUpdate = 0;
 #ifndef GITHUB_ASSET_NAME
 #define GITHUB_ASSET_NAME "firmware.bin"
 #endif
+// Optional filesystem asset for LittleFS image OTA
+#ifndef GITHUB_FS_ASSET_NAME
+#define GITHUB_FS_ASSET_NAME "littlefs.bin"
+#endif
+// Optional GitHub token to avoid anonymous rate limits (set via -DGITHUB_TOKEN="ghp_...")
+#ifndef GITHUB_TOKEN
+#define GITHUB_TOKEN ""
+#endif
 static String fwVersion = String(FW_VERSION);
 static const char* kGithubOwner = GITHUB_OWNER;  // override via -DGITHUB_OWNER=\"owner\"
 static const char* kGithubRepo  = GITHUB_REPO;   // override via -DGITHUB_REPO=\"repo\"
@@ -189,6 +198,34 @@ String generateJsonData();
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
              void *arg, uint8_t *data, size_t len);
 
+// ---- Version helpers ----
+static String normalizeVersion(const String& v) {
+  // Trim spaces and a leading 'v' or 'V'
+  int i = 0;
+  while (i < (int)v.length() && isspace((int)v[i])) i++;
+  if (i < (int)v.length() && (v[i] == 'v' || v[i] == 'V')) i++;
+  return v.substring(i);
+}
+static int semverCompare(const String& aIn, const String& bIn) {
+  String a = normalizeVersion(aIn), b = normalizeVersion(bIn);
+  // Compare dotted numeric parts, non-numeric ignored
+  int ia = 0, ib = 0;
+  while (ia < (int)a.length() || ib < (int)b.length()) {
+    long va = 0, vb = 0;
+    // parse next int from a
+    while (ia < (int)a.length() && !isdigit((int)a[ia])) ia++;
+    while (ia < (int)a.length() && isdigit((int)a[ia])) { va = va * 10 + (a[ia]-'0'); ia++; }
+    // skip separators
+    while (ia < (int)a.length() && a[ia] != '\0' && !isdigit((int)a[ia])) ia++;
+    // parse next int from b
+    while (ib < (int)b.length() && !isdigit((int)b[ib])) ib++;
+    while (ib < (int)b.length() && isdigit((int)b[ib])) { vb = vb * 10 + (b[ib]-'0'); ib++; }
+    while (ib < (int)b.length() && b[ib] != '\0' && !isdigit((int)b[ib])) ib++;
+    if (va != vb) return (va < vb) ? -1 : 1;
+  }
+  return 0; // equal
+}
+
 // OTA helpers (GitHub Releases)
 static String httpGet(const String& url) {
   WiFiClientSecure client;
@@ -198,6 +235,10 @@ static String httpGet(const String& url) {
   https.addHeader("User-Agent", "ReptiMon-OTA");
   // Hint GitHub to return JSON (not strictly required, but more future-proof)
   https.addHeader("Accept", "application/vnd.github+json");
+  // Optional Authorization to bypass low anonymous rate limits
+  if (GITHUB_TOKEN[0] != '\0') {
+    https.addHeader("Authorization", String("Bearer ") + GITHUB_TOKEN);
+  }
   int code = https.GET();
   if (code != HTTP_CODE_OK) { https.end(); return String(); }
   String body = https.getString();
@@ -205,53 +246,44 @@ static String httpGet(const String& url) {
   return body;
 }
 
-static bool checkGithubLatest(String& outTag, String& outUrl) {
-  // Strategy:
-  // 1) Try the canonical latest (non-prerelease) endpoint
-  // 2) If that fails or asset not found, fall back to the first item in /releases (may include prereleases)
-  String apiLatest = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases/latest";
-  String json = httpGet(apiLatest);
-  bool found = false;
-  if (json.length() > 0) {
-    DynamicJsonDocument doc(8192);
-    auto err = deserializeJson(doc, json);
-    if (!err) {
-      String tag = String((const char*)doc["tag_name"]);
-      JsonArray assets = doc["assets"].as<JsonArray>();
-      String url = "";
-      for (auto v : assets) {
-        const char* name = v["name"] | "";
-        const char* dl = v["browser_download_url"] | "";
-        if (strcmp(name, kGithubAsset) == 0 && dl && *dl) { url = String(dl); break; }
-      }
-      if (tag.length() && url.length()) { outTag = tag; outUrl = url; return true; }
-    }
-  }
-  // Fallback: fetch the releases list and pick the first that has our asset
-  String apiList = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases";
-  String listJson = httpGet(apiList);
-  if (listJson.length() == 0) return false;
-  DynamicJsonDocument arr(16384);
-  auto err2 = deserializeJson(arr, listJson);
-  if (err2) return false;
-  if (!arr.is<JsonArray>()) return false;
-  for (JsonVariant v : arr.as<JsonArray>()) {
-    if (!v.is<JsonObject>()) continue;
-    const char* draft = v["draft"] | ""; // not used, but keep for clarity
-    // Prefer published releases; prerelease allowed
-    const char* tag = v["tag_name"] | "";
+// New: supports prereleases and returns both firmware and filesystem URLs
+static bool getGithubLatest(String& outTag, String& outFwUrl, String& outFsUrl, String& outReleasePage) {
+  String base = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases";
+  auto parseRelease = [&](JsonVariant v)->bool{
+    if (!v.is<JsonObject>()) return false;
+    const char* tagC = v["tag_name"].is<const char*>() ? v["tag_name"].as<const char*>() : "";
+    const char* pageC = v["html_url"].is<const char*>() ? v["html_url"].as<const char*>() : "";
+    outTag = String(tagC);
+    outReleasePage = String(pageC);
+    outFwUrl = ""; outFsUrl = "";
     JsonArray assets = v["assets"].as<JsonArray>();
     if (!assets.isNull()) {
       for (JsonVariant a : assets) {
-        const char* name = a["name"] | "";
-        const char* dl = a["browser_download_url"] | "";
-        if (strcmp(name, kGithubAsset) == 0 && dl && *dl) {
-          outTag = String(tag);
-          outUrl = String(dl);
-          return outTag.length() && outUrl.length();
-        }
+        const char* name = a["name"].is<const char*>() ? a["name"].as<const char*>() : "";
+        const char* dl   = a["browser_download_url"].is<const char*>() ? a["browser_download_url"].as<const char*>() : "";
+        if (!name || !dl || !*dl) continue;
+        if (strcmp(name, kGithubAsset) == 0) outFwUrl = String(dl);
+        if (strcmp(name, GITHUB_FS_ASSET_NAME) == 0) outFsUrl = String(dl);
       }
     }
+    return outTag.length() && outFwUrl.length();
+  };
+  // 1) /latest (published releases)
+  String latestJson = httpGet(base + "/latest");
+  if (latestJson.length()) {
+    DynamicJsonDocument d(32768);
+    if (!deserializeJson(d, latestJson)) {
+      if (parseRelease(d.as<JsonVariant>())) return true;
+    }
+  }
+  // 2) Fallback to releases list (includes prereleases)
+  String listJson = httpGet(base);
+  if (!listJson.length()) return false;
+  DynamicJsonDocument arr(65536);
+  if (deserializeJson(arr, listJson)) return false;
+  if (!arr.is<JsonArray>()) return false;
+  for (JsonVariant r : arr.as<JsonArray>()) {
+    if (parseRelease(r)) return true; // GitHub returns newest first
   }
   return false;
 }
@@ -263,6 +295,10 @@ static bool applyOtaFromUrl(const String& url, String& outMsg) {
   HTTPClient https;
   if (!https.begin(client, url)) { outMsg = "begin failed"; return false; }
   https.addHeader("User-Agent", "ReptiMon-OTA");
+  https.addHeader("Accept", "application/octet-stream");
+  if (GITHUB_TOKEN[0] != '\0') {
+    https.addHeader("Authorization", String("Bearer ") + GITHUB_TOKEN);
+  }
   int code = https.GET();
   if (code != HTTP_CODE_OK) { outMsg = String("HTTP ") + code; https.end(); return false; }
   int len = https.getSize();
@@ -275,6 +311,34 @@ static bool applyOtaFromUrl(const String& url, String& outMsg) {
   https.end();
   otaInProgress = false;
   if (!ok) { outMsg = String("Update failed: ") + (Update.getError()); return false; }
+  outMsg = "OK";
+  return true;
+}
+
+// Filesystem OTA (LittleFS image)
+static bool applyFsOtaFromUrl(const String& url, String& outMsg) {
+  if (otaInProgress) { outMsg = "OTA in progress"; return false; }
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient https;
+  if (!https.begin(client, url)) { outMsg = "begin failed"; return false; }
+  https.addHeader("User-Agent", "ReptiMon-OTA");
+  https.addHeader("Accept", "application/octet-stream");
+  if (GITHUB_TOKEN[0] != '\0') {
+    https.addHeader("Authorization", String("Bearer ") + GITHUB_TOKEN);
+  }
+  int code = https.GET();
+  if (code != HTTP_CODE_OK) { outMsg = String("HTTP ") + code; https.end(); return false; }
+  int len = https.getSize();
+  if (len <= 0) { outMsg = "invalid size"; https.end(); return false; }
+  if (!Update.begin(len, U_SPIFFS)) { outMsg = "Update.begin(U_SPIFFS) failed"; https.end(); return false; }
+  otaInProgress = true;
+  WiFiClient* stream = https.getStreamPtr();
+  size_t written = Update.writeStream(*stream);
+  bool ok = (written == (size_t)len) && Update.end();
+  https.end();
+  otaInProgress = false;
+  if (!ok) { outMsg = String("FS Update failed: ") + (Update.getError()); return false; }
   outMsg = "OK";
   return true;
 }
@@ -1391,14 +1455,19 @@ void setupWebServer() {
     request->send(200, "application/json", ok ? "{\"status\":\"ok\"}" : "{\"status\":\"failed\"}");
   });
 
-  // OTA: check latest release on GitHub
+  // OTA: check latest release on GitHub (supports prereleases, returns FS availability)
   server.on("/api/ota/check", HTTP_GET, [](AsyncWebServerRequest *request){
-    String tag, url;
-    bool ok = checkGithubLatest(tag, url);
-    DynamicJsonDocument d(256);
+    String tag, fwUrl, fsUrl, relPage;
+    bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage);
+    DynamicJsonDocument d(512);
     d["current"] = fwVersion;
-    if (ok) { d["latest"] = tag; d["hasUpdate"] = (tag != fwVersion); d["ok"] = true; }
-    else { d["latest"] = ""; d["hasUpdate"] = false; d["ok"] = false; }
+    d["ok"] = ok;
+    d["latest"] = ok ? tag : "";
+    d["hasUpdate"] = ok ? (semverCompare(fwVersion, tag) < 0) : false;
+    d["hasFs"] = ok ? (fsUrl.length() > 0) : false;
+    String repo = String(kGithubOwner) + "/" + String(kGithubRepo);
+    d["repo"] = repo;
+    d["releaseUrl"] = relPage.length() ? relPage : String("https://github.com/") + repo + "/releases";
     String o; serializeJson(d, o);
     request->send(200, "application/json", o);
   });
@@ -1408,16 +1477,62 @@ void setupWebServer() {
   }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
     // Run OTA in a separate task to avoid blocking
     xTaskCreate([](void*){
-      String tag, url, msg;
-      bool ok = checkGithubLatest(tag, url);
-      if (ok && tag != fwVersion) {
-        if (applyOtaFromUrl(url, msg)) {
+      String tag, fwUrl, fsUrl, relPage, msg;
+      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage);
+      if (ok && semverCompare(fwVersion, tag) < 0) {
+        if (applyOtaFromUrl(fwUrl, msg)) {
           delay(250);
           ESP.restart();
         }
       }
       vTaskDelete(NULL);
     }, "ota_task", 8192, nullptr, 1, nullptr);
+  });
+
+  // OTA: update filesystem (LittleFS) from latest release asset when available
+  server.on("/api/ota/updatefs", HTTP_POST, [](AsyncWebServerRequest *request){
+    request->send(202, "application/json", "{\"status\":\"starting\"}");
+  }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+    xTaskCreate([](void*){
+      String tag, fwUrl, fsUrl, relPage, msg;
+      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage);
+      if (ok && fsUrl.length()) {
+        if (applyFsOtaFromUrl(fsUrl, msg)) {
+          delay(250);
+          ESP.restart();
+        }
+      }
+      vTaskDelete(NULL);
+    }, "ota_fs_task", 8192, nullptr, 1, nullptr);
+  });
+
+  // OTA: apply firmware first, then filesystem if available, then restart once
+  server.on("/api/ota/update_all", HTTP_POST, [](AsyncWebServerRequest *request){
+    request->send(202, "application/json", "{\"status\":\"starting\"}");
+  }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+    xTaskCreate([](void*){
+      String tag, fwUrl, fsUrl, relPage, msg;
+      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage);
+      bool didSomething = false;
+      // 1) Firmware update if newer
+      if (ok && semverCompare(fwVersion, tag) < 0 && fwUrl.length()) {
+        if (applyOtaFromUrl(fwUrl, msg)) {
+          didSomething = true;
+        }
+      }
+      // 2) Filesystem update if asset exists
+      if (ok && fsUrl.length()) {
+        String msg2;
+        if (applyFsOtaFromUrl(fsUrl, msg2)) {
+          didSomething = true;
+        }
+      }
+      if (didSomething) {
+        delay(300);
+        ESP.restart();
+      }
+      vTaskDelete(NULL);
+    }, "ota_all_task", 12288, nullptr, 1, nullptr);
   });
 
   // Full-resolution snapshot with graceful fallback and restoration
