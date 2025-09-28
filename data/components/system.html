@@ -4,7 +4,7 @@
       <div class="panel-title">Firmware Update <span class="badges"><span id="ota-status" class="badge">Idle</span></span></div>
       <div class="kv">
         <div><span class="label">Current</span><span id="ota-current" class="value small">--</span></div>
-        <div><span class="label">Latest</span><span id="ota-latest" class="value small">--</span></div>
+  <div><span class="label">Latest</span><span id="ota-latest" class="value small">--</span><span id="ota-pub" class="value small muted" style="margin-left:6px"> </span></div>
         <div><span class="label">Source</span><span id="ota-repo" class="value small">Rowson3D/ReptiMon</span></div>
         <div class="full">
           <div class="meter" id="otaProgress"><div id="otaMeter" class="fill" style="width:0%"></div></div>
@@ -13,7 +13,6 @@
         <div class="full toolbar" style="gap:10px;flex-wrap:wrap">
           <button id="ota-check" class="btn primary">Check for Update</button>
           <button id="ota-update" class="btn warn" disabled>Apply Update</button>
-          <button id="ota-update-fs" class="btn" disabled style="display:none">Update Web UI</button>
           <a id="ota-release-link" class="btn sm" href="#" target="_blank" rel="noopener" style="display:none">Release Notes</a>
         </div>
       </div>

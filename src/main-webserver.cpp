@@ -133,6 +133,12 @@ unsigned long lastWebUpdate = 0;
 #ifndef FW_VERSION
 #define FW_VERSION "0.1.0"
 #endif
+#ifndef GIT_COMMIT
+#define GIT_COMMIT "unknown"
+#endif
+#ifndef BUILD_TIME
+#define BUILD_TIME ""
+#endif
 #ifndef GITHUB_OWNER
 #define GITHUB_OWNER "Rowson3D"
 #endif
@@ -151,6 +157,8 @@ unsigned long lastWebUpdate = 0;
 #define GITHUB_TOKEN ""
 #endif
 static String fwVersion = String(FW_VERSION);
+static String fwCommit  = String(GIT_COMMIT);
+static String fwBuild   = String(BUILD_TIME);
 static const char* kGithubOwner = GITHUB_OWNER;  // override via -DGITHUB_OWNER=\"owner\"
 static const char* kGithubRepo  = GITHUB_REPO;   // override via -DGITHUB_REPO=\"repo\"
 static const char* kGithubAsset = GITHUB_ASSET_NAME; // override via -DGITHUB_ASSET_NAME=\"name.bin\"
@@ -247,14 +255,16 @@ static String httpGet(const String& url) {
 }
 
 // New: supports prereleases and returns both firmware and filesystem URLs
-static bool getGithubLatest(String& outTag, String& outFwUrl, String& outFsUrl, String& outReleasePage) {
+static bool getGithubLatest(String& outTag, String& outFwUrl, String& outFsUrl, String& outReleasePage, String& outPublished) {
   String base = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases";
   auto parseRelease = [&](JsonVariant v)->bool{
     if (!v.is<JsonObject>()) return false;
     const char* tagC = v["tag_name"].is<const char*>() ? v["tag_name"].as<const char*>() : "";
     const char* pageC = v["html_url"].is<const char*>() ? v["html_url"].as<const char*>() : "";
+    const char* pubC  = v["published_at"].is<const char*>() ? v["published_at"].as<const char*>() : "";
     outTag = String(tagC);
     outReleasePage = String(pageC);
+    outPublished = String(pubC);
     outFwUrl = ""; outFsUrl = "";
     JsonArray assets = v["assets"].as<JsonArray>();
     if (!assets.isNull()) {
@@ -895,6 +905,8 @@ String generateJsonData() {
   sys["freeSketch"] = ESP.getFreeSketchSpace();
   // LittleFS usage (bytes)
   sys["fwVersion"] = fwVersion;
+  sys["fwCommit"] = fwCommit;
+  sys["fwBuilt"] = fwBuild;
   sys["fsTotal"] = LittleFS.totalBytes();
   sys["fsUsed"] = LittleFS.usedBytes();
   // Identity
@@ -1457,8 +1469,8 @@ void setupWebServer() {
 
   // OTA: check latest release on GitHub (supports prereleases, returns FS availability)
   server.on("/api/ota/check", HTTP_GET, [](AsyncWebServerRequest *request){
-    String tag, fwUrl, fsUrl, relPage;
-    bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage);
+    String tag, fwUrl, fsUrl, relPage, publishedAt;
+    bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage, publishedAt);
     DynamicJsonDocument d(512);
     d["current"] = fwVersion;
     d["ok"] = ok;
@@ -1468,6 +1480,7 @@ void setupWebServer() {
     String repo = String(kGithubOwner) + "/" + String(kGithubRepo);
     d["repo"] = repo;
     d["releaseUrl"] = relPage.length() ? relPage : String("https://github.com/") + repo + "/releases";
+    d["publishedAt"] = publishedAt;
     String o; serializeJson(d, o);
     request->send(200, "application/json", o);
   });
@@ -1477,8 +1490,8 @@ void setupWebServer() {
   }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
     // Run OTA in a separate task to avoid blocking
     xTaskCreate([](void*){
-      String tag, fwUrl, fsUrl, relPage, msg;
-      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage);
+      String tag, fwUrl, fsUrl, relPage, publishedAt, msg;
+      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage, publishedAt);
       if (ok && semverCompare(fwVersion, tag) < 0) {
         if (applyOtaFromUrl(fwUrl, msg)) {
           delay(250);
@@ -1494,8 +1507,8 @@ void setupWebServer() {
     request->send(202, "application/json", "{\"status\":\"starting\"}");
   }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
     xTaskCreate([](void*){
-      String tag, fwUrl, fsUrl, relPage, msg;
-      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage);
+      String tag, fwUrl, fsUrl, relPage, publishedAt, msg;
+      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage, publishedAt);
       if (ok && fsUrl.length()) {
         if (applyFsOtaFromUrl(fsUrl, msg)) {
           delay(250);
@@ -1511,8 +1524,8 @@ void setupWebServer() {
     request->send(202, "application/json", "{\"status\":\"starting\"}");
   }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
     xTaskCreate([](void*){
-      String tag, fwUrl, fsUrl, relPage, msg;
-      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage);
+      String tag, fwUrl, fsUrl, relPage, publishedAt, msg;
+      bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage, publishedAt);
       bool didSomething = false;
       // 1) Firmware update if newer
       if (ok && semverCompare(fwVersion, tag) < 0 && fwUrl.length()) {

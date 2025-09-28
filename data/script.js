@@ -1734,13 +1734,13 @@
       status: document.getElementById('ota-status'),
       current: document.getElementById('ota-current'),
       latest: document.getElementById('ota-latest'),
-      repo: document.getElementById('ota-repo'),
+  repo: document.getElementById('ota-repo'),
+  pub: document.getElementById('ota-pub'),
       msg: document.getElementById('ota-msg'),
       meter: document.getElementById('otaMeter'),
       progress: document.getElementById('otaProgress'),
       check: document.getElementById('ota-check'),
-      update: document.getElementById('ota-update'),
-      updateFs: document.getElementById('ota-update-fs'),
+  update: document.getElementById('ota-update'),
       link: document.getElementById('ota-release-link')
     };
     async function refreshOtaInfo() {
@@ -1753,16 +1753,23 @@
         const j = await r.json();
         els.current.textContent = j.current || '--';
         els.latest.textContent = j.latest || '--';
-        els.msg.textContent = j.ok ? (j.hasUpdate ? 'Update available.' : 'You are up to date.') : 'Update check failed.';
-        els.status.textContent = j.ok ? (j.hasUpdate ? 'Update available' : 'Up to date') : 'Error';
-        els.status.classList.toggle('ok', j.ok && !j.hasUpdate);
-        els.status.classList.toggle('bad', j.ok && j.hasUpdate);
-        els.update.disabled = !(j.ok && j.hasUpdate);
-        // FS button visibility/enabled when FS asset exists
-        if (els.updateFs) {
-          els.updateFs.style.display = j.ok && j.hasFs ? 'inline-block' : 'none';
-          els.updateFs.disabled = !(j.ok && j.hasFs);
+        const publishedTxt = j.publishedAt ? ` (released ${new Date(j.publishedAt).toLocaleDateString()})` : '';
+        if (els.pub) els.pub.textContent = publishedTxt;
+        if (!j.ok) {
+          // Neutral state: no releases found or no update information
+          els.msg.textContent = 'No update found.';
+          els.status.textContent = 'No update';
+          els.status.classList.remove('ok','bad');
+          els.update.disabled = true;
+          if (!j.latest && els.pub) els.pub.textContent = '';
+        } else {
+          els.msg.textContent = j.hasUpdate ? 'Update available.' : 'You are up to date.';
+          els.status.textContent = j.hasUpdate ? 'Update available' : 'Up to date';
+          els.status.classList.toggle('ok', !j.hasUpdate);
+          els.status.classList.toggle('bad', j.hasUpdate);
+          els.update.disabled = !j.hasUpdate;
         }
+        // No separate FS button in simplified UX
         // Optional: backend may later include releaseUrl/repo
         if (j.releaseUrl) { els.link.style.display = 'inline-block'; els.link.href = j.releaseUrl; }
         if (j.repo) { els.repo.textContent = j.repo; }
@@ -1821,40 +1828,7 @@
       }
     });
 
-    els.updateFs?.addEventListener('click', async ()=>{
-      if (!confirm('Update the Web UI (LittleFS) and reboot the device?')) return;
-      try {
-        els.updateFs.disabled = true; els.check.disabled = true; els.update.disabled = true;
-        els.status.textContent = 'Updating UI…';
-        els.msg.textContent = 'Downloading and flashing filesystem. Do not power off.';
-        els.meter?.classList.add('loading');
-        els.meter.style.width = '10%';
-        await fetch('/api/ota/updatefs', { method:'POST' });
-        // Reboot detection similar to firmware
-        let attempts = 0; const sleep = (ms)=>new Promise(res=>setTimeout(res,ms));
-        const spin = setInterval(()=>{ const p = Math.min(95, 10 + attempts*3); els.meter.style.width = p + '%'; attempts++; }, 1000);
-        await sleep(2000);
-        let back = false;
-        for (let i=0;i<90;i++) {
-          try { const r = await fetch('/api/data', { cache:'no-store' }); if (r.ok) { back = true; break; } } catch(e){}
-          await sleep(1000);
-        }
-        clearInterval(spin);
-        els.meter.classList.remove('loading');
-        els.meter.style.width = back ? '100%' : '0%';
-        els.status.textContent = back ? 'UI Updated' : 'Timeout';
-        els.msg.textContent = back ? 'Device is back online.' : 'Device did not return in time. Refresh manually.';
-        els.check.disabled = false; els.update.disabled = false; els.updateFs.disabled = false;
-        await sleep(800);
-        refreshOtaInfo();
-      } catch (e) {
-        els.status.textContent = 'Failed';
-        els.msg.textContent = 'FS update could not be started.';
-        els.updateFs.disabled = false; els.check.disabled = false;
-        els.meter?.classList.remove('loading');
-        els.meter.style.width = '0%';
-      }
-    });
+    // Removed separate FS update flow; Apply Update uses combined endpoint
 
     document.getElementById('reboot')?.addEventListener('click', async () => {
       try { await fetch('/api/system/reboot', { method: 'POST' }); } catch (e) {}
