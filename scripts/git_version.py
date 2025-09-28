@@ -23,11 +23,10 @@ if version.startswith('v'):
 from datetime import datetime
 build_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
-# Inject as C/C++ macros
-cpp_defines = env['CPPDEFINES']
-cpp_defines.append(('FW_VERSION', '"%s"' % version))
-cpp_defines.append(('GIT_COMMIT', '"%s"' % commit))
-cpp_defines.append(('GIT_BRANCH', '"%s"' % branch))
-cpp_defines.append(('BUILD_TIME', '"%s"' % build_time))
-
-env.Replace(CPPDEFINES=cpp_defines)
+# Inject as C/C++ macros safely
+env.Append(CPPDEFINES=[
+    ('FW_VERSION', '"%s"' % version),
+    ('GIT_COMMIT', '"%s"' % commit),
+    ('GIT_BRANCH', '"%s"' % branch),
+    ('BUILD_TIME', '"%s"' % build_time),
+])
