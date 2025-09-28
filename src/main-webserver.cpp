@@ -132,9 +132,19 @@ unsigned long lastWebUpdate = 0;
 #ifndef FW_VERSION
 #define FW_VERSION "0.1.0"
 #endif
+#ifndef GITHUB_OWNER
+#define GITHUB_OWNER "Rowson3D"
+#endif
+#ifndef GITHUB_REPO
+#define GITHUB_REPO  "ReptiMon"
+#endif
+#ifndef GITHUB_ASSET_NAME
+#define GITHUB_ASSET_NAME "firmware.bin"
+#endif
 static String fwVersion = String(FW_VERSION);
-static const char* kGithubOwner = "Rowson3D";  // adjust if you move the repo
-static const char* kGithubRepo  = "ReptiMon";  // adjust if you rename the repo
+static const char* kGithubOwner = GITHUB_OWNER;  // override via -DGITHUB_OWNER=\"owner\"
+static const char* kGithubRepo  = GITHUB_REPO;   // override via -DGITHUB_REPO=\"repo\"
+static const char* kGithubAsset = GITHUB_ASSET_NAME; // override via -DGITHUB_ASSET_NAME=\"name.bin\"
 static String otaLatestVersion = "";
 static String otaLatestUrl = "";
 static volatile bool otaInProgress = false;
@@ -201,12 +211,12 @@ static bool checkGithubLatest(String& outTag, String& outUrl) {
   auto err = deserializeJson(doc, json);
   if (err) return false;
   outTag = String((const char*)doc["tag_name"]);
-  // Expect an asset named firmware.bin
+  // Expect an asset with configured name
   JsonArray assets = doc["assets"].as<JsonArray>();
   for (auto v : assets) {
     const char* name = v["name"] | "";
     const char* url = v["browser_download_url"] | "";
-    if (strcmp(name, "firmware.bin") == 0 && url && *url) { outUrl = String(url); break; }
+    if (strcmp(name, kGithubAsset) == 0 && url && *url) { outUrl = String(url); break; }
   }
   return outTag.length() && outUrl.length();
 }
