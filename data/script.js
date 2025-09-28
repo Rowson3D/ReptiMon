@@ -1747,6 +1747,20 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       } catch (e) {}
     });
+    document.getElementById('ota-check')?.addEventListener('click', async ()=>{
+      try{
+        const r = await fetch('/api/ota/check');
+        const j = await r.json();
+        alert(`Current: ${j.current || '--'}\nLatest: ${j.latest || '--'}\nUpdate available: ${j.hasUpdate ? 'Yes' : 'No'}`);
+      }catch(e){ alert('Failed to check update'); }
+    });
+    document.getElementById('ota-update')?.addEventListener('click', async ()=>{
+      if (!confirm('Apply update from GitHub latest release and reboot?')) return;
+      try{
+        await fetch('/api/ota/update', { method:'POST' });
+        alert('Update started. Device will reboot if successful.');
+      }catch(e){ alert('Failed to start update'); }
+    });
   }
 
   // (removed duplicate updateFooterNet definition)

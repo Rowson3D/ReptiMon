@@ -8,6 +8,9 @@
 #include <Preferences.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <Update.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -125,6 +128,17 @@ unsigned long displayUpdateCount = 0;
 String lastJsonData = "";
 unsigned long lastWebUpdate = 0;
 
+// Firmware version and OTA state
+#ifndef FW_VERSION
+#define FW_VERSION "0.1.0"
+#endif
+static String fwVersion = String(FW_VERSION);
+static const char* kGithubOwner = "Rowson3D";  // adjust if you move the repo
+static const char* kGithubRepo  = "ReptiMon";  // adjust if you rename the repo
+static String otaLatestVersion = "";
+static String otaLatestUrl = "";
+static volatile bool otaInProgress = false;
+
 // Camera state
 bool cameraAvailable = false;
 // Camera stream statistics (global across clients)
@@ -164,6 +178,61 @@ void setupWebServer();
 String generateJsonData();
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
              void *arg, uint8_t *data, size_t len);
+
+// OTA helpers (GitHub Releases)
+static String httpGet(const String& url) {
+  WiFiClientSecure client;
+  client.setInsecure(); // NOTE: For production, pin the certificate
+  HTTPClient https;
+  if (!https.begin(client, url)) return String();
+  https.addHeader("User-Agent", "ReptiMon-OTA");
+  int code = https.GET();
+  if (code != HTTP_CODE_OK) { https.end(); return String(); }
+  String body = https.getString();
+  https.end();
+  return body;
+}
+
+static bool checkGithubLatest(String& outTag, String& outUrl) {
+  String api = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases/latest";
+  String json = httpGet(api);
+  if (json.length() == 0) return false;
+  DynamicJsonDocument doc(8192);
+  auto err = deserializeJson(doc, json);
+  if (err) return false;
+  outTag = String((const char*)doc["tag_name"]);
+  // Expect an asset named firmware.bin
+  JsonArray assets = doc["assets"].as<JsonArray>();
+  for (auto v : assets) {
+    const char* name = v["name"] | "";
+    const char* url = v["browser_download_url"] | "";
+    if (strcmp(name, "firmware.bin") == 0 && url && *url) { outUrl = String(url); break; }
+  }
+  return outTag.length() && outUrl.length();
+}
+
+static bool applyOtaFromUrl(const String& url, String& outMsg) {
+  if (otaInProgress) { outMsg = "OTA in progress"; return false; }
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient https;
+  if (!https.begin(client, url)) { outMsg = "begin failed"; return false; }
+  https.addHeader("User-Agent", "ReptiMon-OTA");
+  int code = https.GET();
+  if (code != HTTP_CODE_OK) { outMsg = String("HTTP ") + code; https.end(); return false; }
+  int len = https.getSize();
+  if (len <= 0) { outMsg = "invalid size"; https.end(); return false; }
+  if (!Update.begin(len)) { outMsg = "Update.begin failed"; https.end(); return false; }
+  otaInProgress = true;
+  WiFiClient* stream = https.getStreamPtr();
+  size_t written = Update.writeStream(*stream);
+  bool ok = (written == (size_t)len) && Update.end();
+  https.end();
+  otaInProgress = false;
+  if (!ok) { outMsg = String("Update failed: ") + (Update.getError()); return false; }
+  outMsg = "OK";
+  return true;
+}
 
 // XIAO ESP32S3 + OV2640 default pinout (common AI-Thinker compatible)
 // Adjust if your breakout differs
@@ -716,6 +785,7 @@ String generateJsonData() {
   sys["sketchSize"] = ESP.getSketchSize();
   sys["freeSketch"] = ESP.getFreeSketchSpace();
   // LittleFS usage (bytes)
+  sys["fwVersion"] = fwVersion;
   sys["fsTotal"] = LittleFS.totalBytes();
   sys["fsUsed"] = LittleFS.usedBytes();
   // Identity
@@ -1274,6 +1344,35 @@ void setupWebServer() {
     }
     if (cameraMutex) xSemaphoreGive(cameraMutex);
     request->send(200, "application/json", ok ? "{\"status\":\"ok\"}" : "{\"status\":\"failed\"}");
+  });
+
+  // OTA: check latest release on GitHub
+  server.on("/api/ota/check", HTTP_GET, [](AsyncWebServerRequest *request){
+    String tag, url;
+    bool ok = checkGithubLatest(tag, url);
+    DynamicJsonDocument d(256);
+    d["current"] = fwVersion;
+    if (ok) { d["latest"] = tag; d["hasUpdate"] = (tag != fwVersion); }
+    else { d["latest"] = ""; d["hasUpdate"] = false; }
+    String o; serializeJson(d, o);
+    request->send(200, "application/json", o);
+  });
+  // OTA: apply update from latest release asset (firmware.bin)
+  server.on("/api/ota/update", HTTP_POST, [](AsyncWebServerRequest *request){
+    request->send(202, "application/json", "{\"status\":\"starting\"}");
+  }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+    // Run OTA in a separate task to avoid blocking
+    xTaskCreate([](void*){
+      String tag, url, msg;
+      bool ok = checkGithubLatest(tag, url);
+      if (ok && tag != fwVersion) {
+        if (applyOtaFromUrl(url, msg)) {
+          delay(250);
+          ESP.restart();
+        }
+      }
+      vTaskDelete(NULL);
+    }, "ota_task", 8192, nullptr, 1, nullptr);
   });
 
   // Full-resolution snapshot with graceful fallback and restoration
