@@ -196,6 +196,8 @@ static String httpGet(const String& url) {
   HTTPClient https;
   if (!https.begin(client, url)) return String();
   https.addHeader("User-Agent", "ReptiMon-OTA");
+  // Hint GitHub to return JSON (not strictly required, but more future-proof)
+  https.addHeader("Accept", "application/vnd.github+json");
   int code = https.GET();
   if (code != HTTP_CODE_OK) { https.end(); return String(); }
   String body = https.getString();
@@ -204,21 +206,54 @@ static String httpGet(const String& url) {
 }
 
 static bool checkGithubLatest(String& outTag, String& outUrl) {
-  String api = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases/latest";
-  String json = httpGet(api);
-  if (json.length() == 0) return false;
-  DynamicJsonDocument doc(8192);
-  auto err = deserializeJson(doc, json);
-  if (err) return false;
-  outTag = String((const char*)doc["tag_name"]);
-  // Expect an asset with configured name
-  JsonArray assets = doc["assets"].as<JsonArray>();
-  for (auto v : assets) {
-    const char* name = v["name"] | "";
-    const char* url = v["browser_download_url"] | "";
-    if (strcmp(name, kGithubAsset) == 0 && url && *url) { outUrl = String(url); break; }
+  // Strategy:
+  // 1) Try the canonical latest (non-prerelease) endpoint
+  // 2) If that fails or asset not found, fall back to the first item in /releases (may include prereleases)
+  String apiLatest = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases/latest";
+  String json = httpGet(apiLatest);
+  bool found = false;
+  if (json.length() > 0) {
+    DynamicJsonDocument doc(8192);
+    auto err = deserializeJson(doc, json);
+    if (!err) {
+      String tag = String((const char*)doc["tag_name"]);
+      JsonArray assets = doc["assets"].as<JsonArray>();
+      String url = "";
+      for (auto v : assets) {
+        const char* name = v["name"] | "";
+        const char* dl = v["browser_download_url"] | "";
+        if (strcmp(name, kGithubAsset) == 0 && dl && *dl) { url = String(dl); break; }
+      }
+      if (tag.length() && url.length()) { outTag = tag; outUrl = url; return true; }
+    }
   }
-  return outTag.length() && outUrl.length();
+  // Fallback: fetch the releases list and pick the first that has our asset
+  String apiList = String("https://api.github.com/repos/") + kGithubOwner + "/" + kGithubRepo + "/releases";
+  String listJson = httpGet(apiList);
+  if (listJson.length() == 0) return false;
+  DynamicJsonDocument arr(16384);
+  auto err2 = deserializeJson(arr, listJson);
+  if (err2) return false;
+  if (!arr.is<JsonArray>()) return false;
+  for (JsonVariant v : arr.as<JsonArray>()) {
+    if (!v.is<JsonObject>()) continue;
+    const char* draft = v["draft"] | ""; // not used, but keep for clarity
+    // Prefer published releases; prerelease allowed
+    const char* tag = v["tag_name"] | "";
+    JsonArray assets = v["assets"].as<JsonArray>();
+    if (!assets.isNull()) {
+      for (JsonVariant a : assets) {
+        const char* name = a["name"] | "";
+        const char* dl = a["browser_download_url"] | "";
+        if (strcmp(name, kGithubAsset) == 0 && dl && *dl) {
+          outTag = String(tag);
+          outUrl = String(dl);
+          return outTag.length() && outUrl.length();
+        }
+      }
+    }
+  }
+  return false;
 }
 
 static bool applyOtaFromUrl(const String& url, String& outMsg) {
@@ -1362,8 +1397,8 @@ void setupWebServer() {
     bool ok = checkGithubLatest(tag, url);
     DynamicJsonDocument d(256);
     d["current"] = fwVersion;
-    if (ok) { d["latest"] = tag; d["hasUpdate"] = (tag != fwVersion); }
-    else { d["latest"] = ""; d["hasUpdate"] = false; }
+    if (ok) { d["latest"] = tag; d["hasUpdate"] = (tag != fwVersion); d["ok"] = true; }
+    else { d["latest"] = ""; d["hasUpdate"] = false; d["ok"] = false; }
     String o; serializeJson(d, o);
     request->send(200, "application/json", o);
   });
