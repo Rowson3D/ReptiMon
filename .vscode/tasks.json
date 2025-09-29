@@ -10,6 +10,20 @@
 				"$gcc"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Build LittleFS Image",
+			"type": "shell",
+			"command": "pio run -e seeed_xiao_esp32s3 -t buildfs",
+			"args": [],
+			"group": "build"
+		},
+		{
+			"label": "Build LittleFS Image",
+			"type": "shell",
+			"command": "pio run -e seeed_xiao_esp32s3 -t buildfs",
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }

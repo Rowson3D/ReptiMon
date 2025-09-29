@@ -111,7 +111,7 @@
     await loadPartial('header', '/partials/header.html');
     await loadPartial('footer', '/partials/footer.html');
     applyFixedBars();
-    // Populate header/footer network info immediately and on an interval
+  // Populate header/footer network info immediately and on an interval
     try { await updateFooterNet(); } catch (e) {}
     setInterval(updateFooterNet, 5000);
     // Load any persisted history before components mount so charts can show instantly
@@ -163,6 +163,28 @@
       localStorage.setItem('sidebar-collapsed', isCollapsed ? 'true' : 'false');
       burger?.setAttribute('aria-pressed', isCollapsed ? 'true' : 'false');
       sidebar?.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+    });
+
+    // Show header Update badge when a new release is available
+    const updateBadge = document.getElementById('updateBadge');
+    async function checkUpdateBadge(){
+      try {
+        const r = await fetch('/api/ota/check', { cache:'no-store' });
+        const j = await r.json();
+        const show = !!(j && j.ok && j.hasUpdate);
+        if (updateBadge) updateBadge.style.display = show ? 'inline-block' : 'none';
+      } catch(e) {
+        // ignore
+      }
+    }
+    // initial + periodic badge check
+    checkUpdateBadge(); setInterval(checkUpdateBadge, 60000);
+    // clicking the badge navigates to System and refreshes OTA info
+    updateBadge?.addEventListener('click', () => {
+      const sysBtn = document.querySelector('.side-item[data-panel="system"]');
+      sysBtn?.click();
+      // give component a tick to mount
+      setTimeout(() => { try { document.getElementById('ota-check')?.click(); } catch(e){} }, 200);
     });
 
     // 5. Live data websocket + fallback polling
@@ -525,6 +547,7 @@
   const hHost = document.getElementById('headerHost'); if (hHost) hHost.textContent = d?.system?.hostname || '--';
   const hIP = document.getElementById('headerIP'); if (hIP) hIP.textContent = d?.system?.ip || '--';
   const hSSID = document.getElementById('headerSSID'); if (hSSID) hSSID.textContent = d?.ssid || '--';
+  const hVer = document.getElementById('brand-version'); if (hVer) hVer.textContent = d?.system?.fwVersion ? ('v' + d.system.fwVersion) : 'v--';
     const qiRSSI = $('#qi-rssi');
     if (qiRSSI) qiRSSI.textContent = Number.isFinite(d?.system?.rssi) ? `${d.system.rssi} dBm` : '--';
     const qiCam = $('#qi-camera');
@@ -574,8 +597,8 @@
   const moodElGetter = () => document.getElementById('moodLine');
   let lastMoodUpdate = 0;
   let lastMoodBucket = null;
-  const MOOD_MIN_INTERVAL = 12000; // min time before we allow another change
-  const MOOD_ROTATE_INTERVAL = 45000; // force rotation every 45s even if bucket constant
+  const MOOD_MIN_INTERVAL = 15000; // slightly longer to avoid churn
+  const MOOD_ROTATE_INTERVAL = 60000; // rotate less often
   const phrases = {
     good: [
       'Conditions optimal', 'Environment within target range', 'Stable and on target', 'Comfort level: optimal', 'All parameters nominal'
@@ -652,16 +675,19 @@
       return NaN;
     }
     const tScore = subScore(tempLike, tmin, tideal, tmax);
-    const hScore = subScore(hum, hmin, hideal, hmax);
+    const hScore = subScore(d.humidity, hmin, hideal, hmax);
     const comfortScore = Number.isFinite(d?.__comfort) ? d.__comfort : (Number.isFinite(tScore)&&Number.isFinite(hScore)?(tScore+hScore)/2: (Number.isFinite(tScore)?tScore:hScore));
     // Directional checks tied to thresholds
-    const tooHot = tempLike > tmax;
-    const tooCold = tempLike < tmin;
-    const tooWet = hum > hmax;
-    const tooDry = hum < hmin;
+  // Require a margin outside thresholds to call it "bad"
+  const tempMargin = (d?.units === 'F') ? 1.5 : 0.8;
+  const humMargin = 3.0;
+  const tooHot = tempLike > (tmax + tempMargin);
+  const tooCold = tempLike < (tmin - tempMargin);
+  const tooWet = hum > (hmax + humMargin);
+  const tooDry = hum < (hmin - humMargin);
     // Base bucket from subscores
     let baseBucket = 'good';
-    if (!Number.isFinite(comfortScore) || comfortScore < 85) baseBucket = 'fair';
+  if (!Number.isFinite(comfortScore) || comfortScore < 75) baseBucket = 'fair';
     // Combined directional states take priority when both temp and humidity are out of range
     let state = baseBucket;
     if ((tooHot || tooCold) && (tooWet || tooDry)) {
@@ -1428,7 +1454,7 @@
     connectWS();
     setStatus('Initializing...');
     setLive(true);
-  setAspect('w43');
+    setAspect('w43');
 
   // Streaming stats (server-reported)
   let frameCount = 0;
@@ -1555,20 +1581,27 @@
     pollId = setInterval(fillInfo, 5000);
 
     const scanBtn = document.getElementById('scan');
-    let scanPoll;
+    let scanPoll; // interval id
+    let scanKick; // timeout id for initial kick
+    let scanActive = false; // guard to ignore late pollers
     scanBtn?.addEventListener('click', async () => {
       const el = document.getElementById('scanResults'); if (!el) return;
       // UI: loading state
+      // If a scan is already active, cancel it cleanly
+      try { clearInterval(scanPoll); } catch {}
+      try { clearTimeout(scanKick); } catch {}
+      scanActive = true;
       scanBtn.disabled = true; scanBtn.classList.add('loading');
       el.innerHTML = `<div class="loading-row"><span class="spinner"></span> Scanning for networks…</div>`;
       try { await fetch('/api/wifi/scan/start'); } catch (e) {}
       // Poll every 900ms until status === 'done' | 'failed'
       const pollOnce = async () => {
+        if (!scanActive) return; // ignore late timers after completion
         try {
           const r = await fetch('/api/wifi/scan/results');
           const d = await r.json();
           if (d.status === 'scanning') { return; }
-          if (d.status === 'failed') { el.innerHTML = '<div class="loading-row">Scan failed. Try again.</div>'; cleanupScan(); return; }
+          if (d.status === 'failed') { if (!scanActive) return; el.innerHTML = '<div class="loading-row">Scan failed. Try again.</div>'; cleanupScan(); return; }
           if (Array.isArray(d.networks)) {
             const list = d.networks
               .filter((n) => n.ssid && n.ssid.trim().length > 0)
@@ -1589,14 +1622,20 @@
               if (secure) openPw(ssid); else connectTo(ssid, '');
             }));
             cleanupScan();
+            return;
           }
-        } catch (e) { el.innerHTML = '<div class="loading-row">Scan error.</div>'; cleanupScan(); }
+        } catch (e) { if (!scanActive) return; el.innerHTML = '<div class="loading-row">Scan error.</div>'; cleanupScan(); }
       };
-      const cleanupScan = () => { clearInterval(scanPoll); scanPoll = undefined; scanBtn.disabled = false; scanBtn.classList.remove('loading'); };
-      try { clearInterval(scanPoll); } catch {}
+      const cleanupScan = () => {
+        scanActive = false;
+        try { clearInterval(scanPoll); } catch {}
+        try { clearTimeout(scanKick); } catch {}
+        scanPoll = undefined; scanKick = undefined;
+        scanBtn.disabled = false; scanBtn.classList.remove('loading');
+      };
       scanPoll = setInterval(pollOnce, 900);
       // Also kick immediate first check after a short delay for async start
-      setTimeout(pollOnce, 900);
+      scanKick = setTimeout(pollOnce, 900);
     });
     async function connectTo(ssid, password = '') {
       try {
@@ -1734,101 +1773,251 @@
       status: document.getElementById('ota-status'),
       current: document.getElementById('ota-current'),
       latest: document.getElementById('ota-latest'),
-  repo: document.getElementById('ota-repo'),
-  pub: document.getElementById('ota-pub'),
+      repo: document.getElementById('ota-repo'),
+      pub: document.getElementById('ota-pub'),
       msg: document.getElementById('ota-msg'),
       meter: document.getElementById('otaMeter'),
       progress: document.getElementById('otaProgress'),
       check: document.getElementById('ota-check'),
-  update: document.getElementById('ota-update'),
-      link: document.getElementById('ota-release-link')
+      update: document.getElementById('ota-update'),
+      link: document.getElementById('ota-release-link'),
+      otaConsole: document.getElementById('ota-console')
     };
+
+    let logTimer = null;
+    // Trackability for button state and completion UX
+    let canUpdate = false;           // from /api/ota/check hasUpdate
+    let wasUpdating = false;         // saw active OTA phase recently
+    let lastPhase = 'idle';          // last known ota phase
+    let justUpdatedUntil = 0;        // timestamp until which we show "Updated"
+    let lastPctSeen = 0;             // ensure progress never regresses during a run
+    let completionRefreshed = false; // prevent duplicate refresh after completion
+    // Keep Current version in sync with live telemetry as a safety net
+    const updateCurrentFromTelemetry = () => {
+      try {
+        const v = window.__momo_last?.system?.fwVersion;
+        if (v && els.current && els.current.textContent !== String(v)) {
+          els.current.textContent = String(v);
+        }
+      } catch (_) {}
+    };
+    window.addEventListener('momo-data', updateCurrentFromTelemetry);
+
+  function startLogPolling() {
+      if (logTimer) return;
+  const pre = els.otaConsole;
+      const fetchLogs = async () => {
+        try {
+          const r = await fetch('/api/ota/log', { cache:'no-store' });
+          if (!r.ok) return;
+          const j = await r.json();
+          const lines = (j && Array.isArray(j.lines)) ? j.lines : [];
+          pre.textContent = lines.length ? lines.join('\n') : '(no logs)';
+          // auto-scroll to bottom
+          pre.scrollTop = pre.scrollHeight;
+        } catch(e) {}
+      };
+      const fetchState = async () => {
+        try {
+          const r = await fetch('/api/ota/state', { cache:'no-store' });
+          if (!r.ok) return;
+          const s = await r.json();
+          // reflect progress and status text
+          const phaseRaw = (s && typeof s.phase === 'string') ? s.phase : 'idle';
+          const phase = String(phaseRaw).toLowerCase();
+          const pctNum = parseFloat(s?.percent);
+          let pct = Number.isFinite(pctNum) ? pctNum : 0;
+          const now = Date.now();
+          // Phase classifiers
+          const isDonePhase = /(done|complete|success|downloaded|finaliz)/.test(phase);
+          // Busy excludes any of the done-like phases so that 'downloaded' doesn't read as busy
+          const isBusyPhase = (!isDonePhase) && ((s && s.inProgress === true)
+            || /(starting|fw|fs|writing|flash|verif|reboot|download(?!ed))/ .test(phase));
+          // Track transitions to mark completion window
+          if (isBusyPhase || isDonePhase) {
+            wasUpdating = true;
+            completionRefreshed = false; // new run: allow post-completion refresh later
+          }
+          if (phase === 'idle' && wasUpdating) {
+            wasUpdating = false;
+            justUpdatedUntil = now + 15000; // keep showing Completed for 15s
+            lastPctSeen = 0; // reset for next run
+            // Kick a one-time refresh to sync version/canUpdate after completion
+            if (!completionRefreshed) {
+              completionRefreshed = true;
+              setTimeout(() => { try { refreshOtaInfo(); } catch(_) {} }, 600);
+            }
+          }
+          lastPhase = phase;
+          if (els.meter) {
+            if (isBusyPhase || isDonePhase) {
+              els.meter.classList.add('loading');
+              // During rebooting or any done-like phase, drive bar to 100%
+              const target = (phase.includes('reboot') || isDonePhase) ? 100 : Math.max(0, Math.min(100, pct));
+              // Monotonic progress within a run
+              const p = Math.max(lastPctSeen || 0, target);
+              els.meter.style.width = p + '%';
+              lastPctSeen = p;
+            } else if (phase === 'error') {
+              els.meter.classList.remove('loading');
+              els.meter.style.width = '0%';
+              lastPctSeen = 0;
+            } else {
+              // idle
+              els.meter.classList.remove('loading');
+              // If we just completed, keep at 100% briefly; otherwise reset to 0
+              els.meter.style.width = (now < justUpdatedUntil) ? '100%' : '0%';
+              if (!(now < justUpdatedUntil)) lastPctSeen = 0;
+            }
+          }
+          if (els.status) {
+            if (now < justUpdatedUntil) {
+              els.status.textContent = 'Updated';
+            } else {
+              // Prefer descriptive buckets to handle unknown phases gracefully
+              if (phase === 'error') {
+                els.status.textContent = 'Error';
+              } else if (isBusyPhase) {
+                if (/\bfw\b/.test(phase)) els.status.textContent = 'Updating firmware...';
+                else if (/\bfs\b/.test(phase)) els.status.textContent = 'Updating Web UI...';
+                else if (phase.includes('reboot')) els.status.textContent = 'Rebooting...';
+                else if (/verif|finaliz|write|flash/.test(phase)) els.status.textContent = 'Applying update...';
+                else if (phase.includes('download')) els.status.textContent = 'Downloading...';
+                else els.status.textContent = 'Updating...';
+              } else if (isDonePhase) {
+                // Avoid looking "stuck" on "Downloaded"; convey we're finishing up
+                els.status.textContent = 'Finalizing...';
+              } else {
+                els.status.textContent = 'Idle';
+              }
+            }
+            els.status.classList.remove('ok','bad');
+            if (phase === 'error') els.status.classList.add('bad');
+          }
+          // show error details if provided
+          if (els.msg) {
+            if (phase === 'error' && typeof s.error === 'string' && s.error) {
+              els.msg.textContent = s.error;
+            } else if (isBusyPhase) {
+              if (/\bfw\b/.test(phase)) els.msg.textContent = 'Downloading and flashing firmware. Do not power off.';
+              else if (/\bfs\b/.test(phase)) els.msg.textContent = 'Downloading and flashing Web UI. Do not power off.';
+              else if (phase.includes('reboot')) els.msg.textContent = 'Rebooting and applying update...';
+              else if (/verif|finaliz|write|flash/.test(phase)) els.msg.textContent = 'Finalizing update...';
+              else if (phase.includes('download')) els.msg.textContent = 'Downloading update...';
+              else els.msg.textContent = 'Updating...';
+            } else if (isDonePhase) {
+              els.msg.textContent = 'Finalizing update...';
+            } else if (now < justUpdatedUntil) {
+              els.msg.textContent = 'Device is back online.';
+            } else {
+              // clear residual message to avoid stale "Downloading..." look
+              els.msg.textContent = '';
+            }
+          }
+          // disable update buttons while in progress
+          const busy = isBusyPhase;
+          if (busy) {
+            if (els.update) els.update.disabled = true;
+            if (els.check) els.check.disabled = true;
+          } else {
+            if (els.check) els.check.disabled = false;
+            if (els.update) els.update.disabled = !canUpdate;
+          }
+        } catch(e) {}
+      };
+      fetchLogs(); fetchState();
+      logTimer = setInterval(()=>{ fetchLogs(); fetchState(); }, 750);
+    }
+    function stopLogPolling() { if (logTimer) { clearInterval(logTimer); logTimer=null; } }
+  function clearLogsUI(){ /* keep logs after run; do not auto-clear UI */ }
+
     async function refreshOtaInfo() {
       try {
-        els.status.textContent = 'Checking…';
-        els.status.classList.remove('ok','bad');
-        els.meter?.classList.add('loading');
-        els.meter.style.width = '25%';
-        const r = await fetch('/api/ota/check');
+        if (els.status) {
+          els.status.textContent = 'Checking...';
+          els.status.classList.remove('ok','bad');
+        }
+        // Show spinner on the Check button instead of using the progress bar
+        const btn = els.check;
+        const origLabel = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.classList.add('loading'); btn.textContent = 'Checking...'; }
+        const r = await fetch('/api/ota/check', { cache: 'no-store' });
         const j = await r.json();
         els.current.textContent = j.current || '--';
         els.latest.textContent = j.latest || '--';
         const publishedTxt = j.publishedAt ? ` (released ${new Date(j.publishedAt).toLocaleDateString()})` : '';
         if (els.pub) els.pub.textContent = publishedTxt;
         if (!j.ok) {
-          // Neutral state: no releases found or no update information
           els.msg.textContent = 'No update found.';
-          els.status.textContent = 'No update';
-          els.status.classList.remove('ok','bad');
+          if (els.status) {
+            els.status.textContent = 'No update';
+            els.status.classList.remove('ok','bad');
+          }
+          canUpdate = false;
           els.update.disabled = true;
           if (!j.latest && els.pub) els.pub.textContent = '';
         } else {
           els.msg.textContent = j.hasUpdate ? 'Update available.' : 'You are up to date.';
-          els.status.textContent = j.hasUpdate ? 'Update available' : 'Up to date';
-          els.status.classList.toggle('ok', !j.hasUpdate);
-          els.status.classList.toggle('bad', j.hasUpdate);
-          els.update.disabled = !j.hasUpdate;
+          if (els.status) {
+            els.status.textContent = j.hasUpdate ? 'Update available' : 'Up to date';
+            els.status.classList.toggle('ok', !j.hasUpdate);
+            els.status.classList.toggle('bad', j.hasUpdate);
+          }
+          canUpdate = !!j.hasUpdate;
+          els.update.disabled = !canUpdate;
         }
-        // No separate FS button in simplified UX
-        // Optional: backend may later include releaseUrl/repo
         if (j.releaseUrl) { els.link.style.display = 'inline-block'; els.link.href = j.releaseUrl; }
         if (j.repo) { els.repo.textContent = j.repo; }
+        // FS-only and note removed from UI
       } catch (e) {
-        els.msg.textContent = 'Failed to contact device';
-        els.status.textContent = 'Error';
+  els.msg.textContent = 'Failed to contact device';
+  if (els.status) els.status.textContent = 'Error';
       } finally {
-        els.meter?.classList.remove('loading');
-        els.meter.style.width = '0%';
+        // Restore Check button state
+        const btn = els.check;
+        if (btn) {
+          btn.classList.remove('loading');
+          btn.disabled = false;
+          btn.textContent = 'Check for Update';
+        }
       }
     }
     els.check?.addEventListener('click', refreshOtaInfo);
     // Start with a passive info load (non-blocking)
-    setTimeout(refreshOtaInfo, 200);
+    setTimeout(() => { refreshOtaInfo(); startLogPolling(); }, 200);
 
     els.update?.addEventListener('click', async ()=>{
       if (!confirm('Apply update and reboot the device?')) return;
       try {
-        els.update.disabled = true; els.check.disabled = true;
-        els.status.textContent = 'Updating…';
-        els.msg.textContent = 'Downloading and flashing firmware + Web UI. Do not power off.';
-        els.meter?.classList.add('loading');
-        els.meter.style.width = '10%';
+  els.update.disabled = true; els.check.disabled = true;
+  // Status/progress now driven by /api/ota/state polling
+  if (els.status) els.status.textContent = 'Starting...';
+        els.msg.textContent = 'Beginning update. Watch the OTA console for details.';
+  // keep prior logs visible; backend will clear at start of update
         await fetch('/api/ota/update_all', { method:'POST' });
-        // Poll for reboot completion by trying /api/data
-        let phase = 'rebooting'; let attempts = 0;
-        const spin = setInterval(()=>{
-          const p = Math.min(95, 10 + attempts*3); els.meter.style.width = p + '%'; attempts++; }, 1000);
-        // Wait for device to go away then come back
+        // Background: wait for device to come back, but UI will reflect 'rebooting' via state polling
         const sleep = (ms)=>new Promise(res=>setTimeout(res,ms));
-        // Give it a moment to start reboot
         await sleep(2000);
-        // Probe loop: expect failures, then success
         let back = false;
-        for (let i=0;i<90;i++) { // up to ~90s
-          try {
-            const r = await fetch('/api/data', { cache:'no-store' });
-            if (r.ok) { back = true; break; }
-          } catch(e) {}
+        for (let i=0;i<90;i++) {
+          try { const r = await fetch('/api/data', { cache:'no-store' }); if (r.ok) { back = true; break; } } catch(e) {}
           await sleep(1000);
         }
-        clearInterval(spin);
-        els.meter.classList.remove('loading');
-        els.meter.style.width = back ? '100%' : '0%';
-        els.status.textContent = back ? 'Updated' : 'Timeout';
-        els.msg.textContent = back ? 'Device is back online.' : 'Device did not return in time. Refresh manually.';
-        els.check.disabled = false; // allow re-check
-        await sleep(800);
-        refreshOtaInfo();
+        if (back) {
+          if (els.status) els.status.textContent = 'Updated';
+          els.msg.textContent = 'Device is back online.';
+          refreshOtaInfo();
+        } else {
+          els.msg.textContent = 'Device did not return in time. Refresh manually.';
+        }
       } catch (e) {
-        els.status.textContent = 'Failed';
+        if (els.status) els.status.textContent = 'Failed';
         els.msg.textContent = 'Update could not be started.';
         els.update.disabled = false; els.check.disabled = false;
-        els.meter?.classList.remove('loading');
-        els.meter.style.width = '0%';
       }
     });
 
-    // Removed separate FS update flow; Apply Update uses combined endpoint
+    // Advanced/FS-only removed from UI
 
     document.getElementById('reboot')?.addEventListener('click', async () => {
       try { await fetch('/api/system/reboot', { method: 'POST' }); } catch (e) {}
@@ -1850,10 +2039,18 @@
       } catch (e) {}
     });
     // legacy alert handlers removed in favor of hero card UX
+    // Cleanup for this component
+    return () => {
+      try { stopLogPolling(); } catch(_){}
+      try { window.removeEventListener('momo-data', updateCurrentFromTelemetry); } catch(_){ }
+    };
+  }
+  
+  // Kick off the app once DOM is ready
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', () => { try { initApp(); } catch(e) {} });
+  } else {
+    try { initApp(); } catch (e) {}
   }
 
-  // (removed duplicate updateFooterNet definition)
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initApp);
-  else initApp();
 })();

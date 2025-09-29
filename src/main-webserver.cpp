@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include "version_auto.h"
 #include <SHT85.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -159,12 +160,70 @@ unsigned long lastWebUpdate = 0;
 static String fwVersion = String(FW_VERSION);
 static String fwCommit  = String(GIT_COMMIT);
 static String fwBuild   = String(BUILD_TIME);
+// Effective installed version (from last OTA). When present, this overrides fwVersion for reporting/comparison.
+static String installedFwTag = ""; // normalized like 0.2.1 (no leading 'v')
 static const char* kGithubOwner = GITHUB_OWNER;  // override via -DGITHUB_OWNER=\"owner\"
 static const char* kGithubRepo  = GITHUB_REPO;   // override via -DGITHUB_REPO=\"repo\"
 static const char* kGithubAsset = GITHUB_ASSET_NAME; // override via -DGITHUB_ASSET_NAME=\"name.bin\"
 static String otaLatestVersion = "";
 static String otaLatestUrl = "";
 static volatile bool otaInProgress = false;
+// OTA state for UI synchronization
+static volatile int otaPct = 0;              // 0..100
+static String otaPhase = "idle";            // idle|starting|fw|fw_done|fs|fs_done|rebooting|error
+static unsigned long otaStartMs = 0;
+static String otaErrorMsg = "";
+static SemaphoreHandle_t otaStateMutex = NULL;
+
+static void setOtaState(const char* phase, int pct = -1) {
+  if (!otaStateMutex) otaStateMutex = xSemaphoreCreateMutex();
+  if (otaStateMutex) xSemaphoreTake(otaStateMutex, portMAX_DELAY);
+  otaPhase = phase ? String(phase) : otaPhase;
+  if (pct >= 0) otaPct = pct;
+  if (otaPhase == "starting") otaStartMs = millis();
+  if (otaStateMutex) xSemaphoreGive(otaStateMutex);
+}
+static void setOtaError(const String& msg) {
+  if (!otaStateMutex) otaStateMutex = xSemaphoreCreateMutex();
+  if (otaStateMutex) xSemaphoreTake(otaStateMutex, portMAX_DELAY);
+  otaPhase = "error"; otaErrorMsg = msg;
+  if (otaStateMutex) xSemaphoreGive(otaStateMutex);
+}
+
+// OTA logging (rolling buffer)
+static const int OTA_LOG_CAP = 200;
+static String otaLogBuf[OTA_LOG_CAP];
+static int otaLogStart = 0;  // index of oldest
+static int otaLogCount = 0;  // number of valid entries
+static SemaphoreHandle_t otaLogMutex = NULL;
+
+static void otaLog(const String &line) {
+  if (!otaLogMutex) otaLogMutex = xSemaphoreCreateMutex();
+  if (otaLogMutex) xSemaphoreTake(otaLogMutex, portMAX_DELAY);
+  // Timestamp (ms since boot)
+  String msg = "[" + String(millis()) + "] " + line;
+  int idx;
+  if (otaLogCount < OTA_LOG_CAP) {
+    idx = (otaLogStart + otaLogCount) % OTA_LOG_CAP;
+    otaLogCount++;
+  } else {
+    // overwrite oldest
+    idx = otaLogStart;
+    otaLogStart = (otaLogStart + 1) % OTA_LOG_CAP;
+  }
+  otaLogBuf[idx] = msg;
+  // Mirror to Serial for dev
+  Serial.println(msg);
+  if (otaLogMutex) xSemaphoreGive(otaLogMutex);
+}
+
+static void otaLogf(const char *fmt, ...) {
+  char buf[192];
+  va_list ap; va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  otaLog(String(buf));
+}
 
 // Camera state
 bool cameraAvailable = false;
@@ -247,6 +306,7 @@ static String httpGet(const String& url) {
   if (GITHUB_TOKEN[0] != '\0') {
     https.addHeader("Authorization", String("Bearer ") + GITHUB_TOKEN);
   }
+  https.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = https.GET();
   if (code != HTTP_CODE_OK) { https.end(); return String(); }
   String body = https.getString();
@@ -300,56 +360,89 @@ static bool getGithubLatest(String& outTag, String& outFwUrl, String& outFsUrl, 
 
 static bool applyOtaFromUrl(const String& url, String& outMsg) {
   if (otaInProgress) { outMsg = "OTA in progress"; return false; }
+  otaLogf("Firmware OTA: GET %s", url.c_str());
+  setOtaState("fw", 0);
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient https;
   if (!https.begin(client, url)) { outMsg = "begin failed"; return false; }
+  // GitHub asset URLs redirect to S3 – follow redirects to get the actual payload
+  https.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   https.addHeader("User-Agent", "ReptiMon-OTA");
   https.addHeader("Accept", "application/octet-stream");
   if (GITHUB_TOKEN[0] != '\0') {
     https.addHeader("Authorization", String("Bearer ") + GITHUB_TOKEN);
   }
   int code = https.GET();
-  if (code != HTTP_CODE_OK) { outMsg = String("HTTP ") + code; https.end(); return false; }
+  if (code != HTTP_CODE_OK) { outMsg = String("HTTP ") + code; https.end(); otaLogf("Firmware OTA: HTTP %d", code); return false; }
   int len = https.getSize();
-  if (len <= 0) { outMsg = "invalid size"; https.end(); return false; }
-  if (!Update.begin(len)) { outMsg = "Update.begin failed"; https.end(); return false; }
+  size_t updateSize = (len > 0) ? (size_t)len : UPDATE_SIZE_UNKNOWN;
+  if (!Update.begin(updateSize)) { outMsg = "Update.begin failed"; https.end(); otaLog("Firmware OTA: Update.begin failed"); setOtaError("fw: Update.begin failed"); return false; }
   otaInProgress = true;
+  // Progress logging (throttled)
+  int lastPct = -10;
+  Update.onProgress([&](size_t pos, size_t total){
+    int pct = (total ? (int)((pos * 100) / total) : (pos % 100));
+    if (pct >= lastPct + 10) { lastPct = pct; otaLogf("Firmware OTA: %d%%", pct); }
+    setOtaState("fw", pct);
+  });
   WiFiClient* stream = https.getStreamPtr();
   size_t written = Update.writeStream(*stream);
-  bool ok = (written == (size_t)len) && Update.end();
+  bool ok = Update.end();
+  if (len > 0) { ok = ok && (written == (size_t)len); }
   https.end();
   otaInProgress = false;
-  if (!ok) { outMsg = String("Update failed: ") + (Update.getError()); return false; }
+  if (!ok) { outMsg = String("Update failed: ") + (Update.getError()); setOtaError(outMsg); return false; }
   outMsg = "OK";
+  otaLog("Firmware OTA: completed");
+  setOtaState("fw_done", 100);
   return true;
 }
 
 // Filesystem OTA (LittleFS image)
 static bool applyFsOtaFromUrl(const String& url, String& outMsg) {
   if (otaInProgress) { outMsg = "OTA in progress"; return false; }
+  otaLogf("FS OTA: GET %s", url.c_str());
+  setOtaState("fs", 0);
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient https;
   if (!https.begin(client, url)) { outMsg = "begin failed"; return false; }
+  // GitHub asset URLs redirect to S3 – follow redirects to get the actual payload
+  https.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   https.addHeader("User-Agent", "ReptiMon-OTA");
   https.addHeader("Accept", "application/octet-stream");
   if (GITHUB_TOKEN[0] != '\0') {
     https.addHeader("Authorization", String("Bearer ") + GITHUB_TOKEN);
   }
   int code = https.GET();
-  if (code != HTTP_CODE_OK) { outMsg = String("HTTP ") + code; https.end(); return false; }
+  if (code != HTTP_CODE_OK) { outMsg = String("HTTP ") + code; https.end(); otaLogf("FS OTA: HTTP %d", code); return false; }
   int len = https.getSize();
-  if (len <= 0) { outMsg = "invalid size"; https.end(); return false; }
-  if (!Update.begin(len, U_SPIFFS)) { outMsg = "Update.begin(U_SPIFFS) failed"; https.end(); return false; }
+  size_t updateSize = (len > 0) ? (size_t)len : UPDATE_SIZE_UNKNOWN;
+  // Prefer U_FS if available (Arduino-ESP32 2.x); fallback to U_SPIFFS for older cores
+  #ifdef U_FS
+    const int FS_TARGET = U_FS;
+  #else
+    const int FS_TARGET = U_SPIFFS;
+  #endif
+  if (!Update.begin(updateSize, FS_TARGET)) { outMsg = "Update.begin(FS) failed"; https.end(); otaLog("FS OTA: Update.begin failed"); setOtaError("fs: Update.begin failed"); return false; }
   otaInProgress = true;
+  int lastPct = -10;
+  Update.onProgress([&](size_t pos, size_t total){
+    int pct = (total ? (int)((pos * 100) / total) : (pos % 100));
+    if (pct >= lastPct + 10) { lastPct = pct; otaLogf("FS OTA: %d%%", pct); }
+    setOtaState("fs", pct);
+  });
   WiFiClient* stream = https.getStreamPtr();
   size_t written = Update.writeStream(*stream);
-  bool ok = (written == (size_t)len) && Update.end();
+  bool ok = Update.end();
+  if (len > 0) { ok = ok && (written == (size_t)len); }
   https.end();
   otaInProgress = false;
-  if (!ok) { outMsg = String("FS Update failed: ") + (Update.getError()); return false; }
+  if (!ok) { outMsg = String("FS Update failed: ") + (Update.getError()); setOtaError(outMsg); return false; }
   outMsg = "OK";
+  otaLog("FS OTA: completed");
+  setOtaState("fs_done", 100);
   return true;
 }
 
@@ -635,6 +728,8 @@ void loadAppSettings() {
   appSettings.comfortIdeal = appPrefs.getFloat("cideal", thresholds.comfortIdeal);
   appSettings.camFrameSize = appPrefs.getInt("camsize", appSettings.camFrameSize);
   appSettings.camQuality = appPrefs.getInt("camq", appSettings.camQuality);
+  // Persisted installed firmware tag (if any)
+  installedFwTag = appPrefs.getString("fw_tag", "");
   appPrefs.end();
 
   // Apply to runtime thresholds and hostname
@@ -665,6 +760,7 @@ void saveAppSettings(const AppSettings &s) {
   appPrefs.putFloat("cideal", s.comfortIdeal);
   appPrefs.putInt("camsize", s.camFrameSize);
   appPrefs.putInt("camq", s.camQuality);
+  if (installedFwTag.length()) appPrefs.putString("fw_tag", installedFwTag);
   appPrefs.end();
 }
 
@@ -904,7 +1000,8 @@ String generateJsonData() {
   sys["sketchSize"] = ESP.getSketchSize();
   sys["freeSketch"] = ESP.getFreeSketchSpace();
   // LittleFS usage (bytes)
-  sys["fwVersion"] = fwVersion;
+  // Report effective version: prefer installedFwTag when set
+  sys["fwVersion"] = (installedFwTag.length() ? installedFwTag : fwVersion);
   sys["fwCommit"] = fwCommit;
   sys["fwBuilt"] = fwBuild;
   sys["fsTotal"] = LittleFS.totalBytes();
@@ -1472,10 +1569,11 @@ void setupWebServer() {
     String tag, fwUrl, fsUrl, relPage, publishedAt;
     bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage, publishedAt);
     DynamicJsonDocument d(512);
-    d["current"] = fwVersion;
+  String effective = (installedFwTag.length() ? installedFwTag : fwVersion);
+  d["current"] = effective;
     d["ok"] = ok;
     d["latest"] = ok ? tag : "";
-    d["hasUpdate"] = ok ? (semverCompare(fwVersion, tag) < 0) : false;
+  d["hasUpdate"] = ok ? (semverCompare(effective, tag) < 0) : false;
     d["hasFs"] = ok ? (fsUrl.length() > 0) : false;
     String repo = String(kGithubOwner) + "/" + String(kGithubRepo);
     d["repo"] = repo;
@@ -1487,16 +1585,30 @@ void setupWebServer() {
   // OTA: apply update from latest release asset (firmware.bin)
   server.on("/api/ota/update", HTTP_POST, [](AsyncWebServerRequest *request){
     request->send(202, "application/json", "{\"status\":\"starting\"}");
-  }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-    // Run OTA in a separate task to avoid blocking
+    // Run OTA in a separate task to avoid blocking; start even for empty POST bodies
     xTaskCreate([](void*){
+      if (!otaLogMutex) otaLogMutex = xSemaphoreCreateMutex();
+      if (otaLogMutex) { xSemaphoreTake(otaLogMutex, portMAX_DELAY); otaLogStart=0; otaLogCount=0; xSemaphoreGive(otaLogMutex); }
+  otaLog("Firmware OTA: starting");
+  setOtaState("starting", 0);
+      if (otaInProgress) { otaLog("Firmware OTA: already in progress"); vTaskDelete(NULL); return; }
       String tag, fwUrl, fsUrl, relPage, publishedAt, msg;
       bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage, publishedAt);
-      if (ok && semverCompare(fwVersion, tag) < 0) {
+      if (!ok) { otaLog("Firmware OTA: failed to query GitHub"); vTaskDelete(NULL); return; }
+      if (semverCompare(fwVersion, tag) < 0 && fwUrl.length()) {
         if (applyOtaFromUrl(fwUrl, msg)) {
+          // Persist effective installed version (normalize to drop leading 'v')
+          installedFwTag = normalizeVersion(tag);
+          appPrefs.begin("app", false); appPrefs.putString("fw_tag", installedFwTag); appPrefs.end();
+          otaLog("Firmware OTA: rebooting");
+          setOtaState("rebooting", 100);
           delay(250);
           ESP.restart();
+        } else {
+          otaLog(String("Firmware OTA: ") + msg);
         }
+      } else {
+        otaLog("Firmware OTA: already up to date");
       }
       vTaskDelete(NULL);
     }, "ota_task", 8192, nullptr, 1, nullptr);
@@ -1505,15 +1617,26 @@ void setupWebServer() {
   // OTA: update filesystem (LittleFS) from latest release asset when available
   server.on("/api/ota/updatefs", HTTP_POST, [](AsyncWebServerRequest *request){
     request->send(202, "application/json", "{\"status\":\"starting\"}");
-  }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
     xTaskCreate([](void*){
+      if (!otaLogMutex) otaLogMutex = xSemaphoreCreateMutex();
+      if (otaLogMutex) { xSemaphoreTake(otaLogMutex, portMAX_DELAY); otaLogStart=0; otaLogCount=0; xSemaphoreGive(otaLogMutex); }
+  otaLog("FS OTA: starting");
+  setOtaState("starting", 0);
+      if (otaInProgress) { otaLog("FS OTA: already in progress"); vTaskDelete(NULL); return; }
       String tag, fwUrl, fsUrl, relPage, publishedAt, msg;
       bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage, publishedAt);
-      if (ok && fsUrl.length()) {
+      if (!ok) { otaLog("FS OTA: failed to query GitHub"); vTaskDelete(NULL); return; }
+      if (fsUrl.length()) {
         if (applyFsOtaFromUrl(fsUrl, msg)) {
+          otaLog("FS OTA: rebooting");
+          setOtaState("rebooting", 100);
           delay(250);
           ESP.restart();
+        } else {
+          otaLog(String("FS OTA: ") + msg);
         }
+      } else {
+        otaLog("FS OTA: no filesystem asset in latest release");
       }
       vTaskDelete(NULL);
     }, "ota_fs_task", 8192, nullptr, 1, nullptr);
@@ -1522,30 +1645,79 @@ void setupWebServer() {
   // OTA: apply firmware first, then filesystem if available, then restart once
   server.on("/api/ota/update_all", HTTP_POST, [](AsyncWebServerRequest *request){
     request->send(202, "application/json", "{\"status\":\"starting\"}");
-  }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
     xTaskCreate([](void*){
+      if (!otaLogMutex) otaLogMutex = xSemaphoreCreateMutex();
+      if (otaLogMutex) { xSemaphoreTake(otaLogMutex, portMAX_DELAY); otaLogStart=0; otaLogCount=0; xSemaphoreGive(otaLogMutex); }
+  otaLog("UpdateAll: starting");
+  setOtaState("starting", 0);
+      if (otaInProgress) { otaLog("UpdateAll: already in progress"); vTaskDelete(NULL); return; }
       String tag, fwUrl, fsUrl, relPage, publishedAt, msg;
       bool ok = getGithubLatest(tag, fwUrl, fsUrl, relPage, publishedAt);
+      if (!ok) { otaLog("UpdateAll: failed to query GitHub"); vTaskDelete(NULL); return; }
       bool didSomething = false;
       // 1) Firmware update if newer
-      if (ok && semverCompare(fwVersion, tag) < 0 && fwUrl.length()) {
+      if (semverCompare(fwVersion, tag) < 0 && fwUrl.length()) {
+        otaLogf("UpdateAll: firmware %s -> %s", fwVersion.c_str(), tag.c_str());
         if (applyOtaFromUrl(fwUrl, msg)) {
+          installedFwTag = normalizeVersion(tag);
+          appPrefs.begin("app", false); appPrefs.putString("fw_tag", installedFwTag); appPrefs.end();
           didSomething = true;
+        } else {
+          otaLog(String("UpdateAll: firmware: ") + msg);
         }
+      } else {
+        otaLog("UpdateAll: firmware already up to date");
       }
       // 2) Filesystem update if asset exists
-      if (ok && fsUrl.length()) {
+      if (fsUrl.length()) {
         String msg2;
+        otaLog("UpdateAll: filesystem asset found");
         if (applyFsOtaFromUrl(fsUrl, msg2)) {
           didSomething = true;
+        } else {
+          otaLog(String("UpdateAll: filesystem: ") + msg2);
         }
+      } else {
+        otaLog("UpdateAll: no filesystem asset in latest release");
       }
       if (didSomething) {
+        otaLog("UpdateAll: rebooting");
+        setOtaState("rebooting", 100);
         delay(300);
         ESP.restart();
+      } else {
+        otaLog("UpdateAll: nothing to do");
       }
       vTaskDelete(NULL);
     }, "ota_all_task", 12288, nullptr, 1, nullptr);
+  });
+
+  // OTA logs endpoint: returns recent log lines
+  server.on("/api/ota/log", HTTP_GET, [](AsyncWebServerRequest *request){
+    DynamicJsonDocument d(4096);
+    JsonArray a = d.createNestedArray("lines");
+    if (otaLogMutex) xSemaphoreTake(otaLogMutex, portMAX_DELAY);
+    for (int i = 0; i < otaLogCount; i++) {
+      int idx = (otaLogStart + i) % OTA_LOG_CAP;
+      a.add(otaLogBuf[idx]);
+    }
+    if (otaLogMutex) xSemaphoreGive(otaLogMutex);
+    String out; serializeJson(d, out);
+    request->send(200, "application/json", out);
+  });
+
+  // OTA state endpoint for driving UI progress/messaging
+  server.on("/api/ota/state", HTTP_GET, [](AsyncWebServerRequest *request){
+    DynamicJsonDocument d(256);
+    if (otaStateMutex) xSemaphoreTake(otaStateMutex, portMAX_DELAY);
+    d["phase"] = otaPhase;
+    d["percent"] = otaPct;
+    d["since"] = otaStartMs;
+    d["inProgress"] = otaInProgress;
+    if (otaPhase == "error" && otaErrorMsg.length()) d["error"] = otaErrorMsg;
+    if (otaStateMutex) xSemaphoreGive(otaStateMutex);
+    String out; serializeJson(d, out);
+    request->send(200, "application/json", out);
   });
 
   // Full-resolution snapshot with graceful fallback and restoration
@@ -1702,6 +1874,11 @@ void setup() {
 
   // Load persisted settings early
   loadAppSettings();
+  // If no persisted installed tag yet, initialize it from compiled FW_VERSION once
+  if (!installedFwTag.length()) {
+    installedFwTag = normalizeVersion(fwVersion);
+    appPrefs.begin("app", false); appPrefs.putString("fw_tag", installedFwTag); appPrefs.end();
+  }
   
   // Initialize built-in LEDs
   pinMode(LED_BUILTIN_RED, OUTPUT);

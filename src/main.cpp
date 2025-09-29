@@ -1,2 +1,2 @@
-// Routing main: compile only this file and include the full implementation
-#include "main-webserver.cpp"
+// Intentionally empty: main-webserver.cpp contains setup()/loop() and all implementation.
+// Keeping this file as a no-op translation unit prevents double-compilation issues.
